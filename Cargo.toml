@@ -6,6 +6,10 @@ edition = "2021"
 description = "The Cognitive File System — it understands and organizes your files automatically"
 license = "GPL-3.0"
 
+[[bin]]
+name = "cognifs"
+path = "src/main.rs"
+
 [dependencies]
 notify = "6.1"
 blake3 = "1.5"
@@ -16,6 +20,9 @@ tokio = { version = "1.35", features = ["full"] }
 async-trait = "0.1"
 meilisearch-sdk = "0.28"
 reqwest = { version = "0.12", features = ["json"] }
+clap = { version = "4.4", features = ["derive"] }
+dialoguer = "0.11"
+walkdir = "2"
 
 [dev-dependencies]
 tempfile = "3.10"
