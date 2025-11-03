@@ -61,10 +61,8 @@ pub(crate) fn generate_tags_default(
     let content_tags = extract_tags_from_content(content);
     tags.extend(content_tags);
 
-    // Add extension-based tag
-    if let Some(ext) = extension {
-        tags.push(ext.to_lowercase());
-    }
+    // Note: Extension is NOT added as a tag to avoid extension names in folder paths
+    // File type categories (document, image, video, etc.) are added in main.rs based on extension
 
     // Remove duplicates while preserving order
     let mut seen = std::collections::HashSet::new();
