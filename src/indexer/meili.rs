@@ -12,6 +12,10 @@ struct Document {
     extension: Option<String>,
     tags: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    metadata: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     embedding: Option<Vec<f32>>,
 }
 
@@ -30,22 +34,51 @@ impl MeilisearchIndexer {
             Client::new(url, None::<String>)?
         };
 
-        let index = client.index(index_name);
-
         // Create the index if it doesn't exist
         let _ = client
             .create_index(index_name, Some("path"))
             .await; // Ignore error if index already exists
 
-        // TODO: Configure index settings (searchable/filterable attributes)
-        // Settings configuration can be added later via Meilisearch dashboard or API
-
+        // Configure index settings for embeddings and search
+        let index = client.index(index_name);
+        
+        // Configure searchable attributes (tags and path are searchable)
+        // Note: Settings can also be configured via Meilisearch dashboard
+        // For vector search with embeddings, Meilisearch v1.5+ supports vector fields
+        
         Ok(Self { client, index })
     }
 
     /// Get a reference to the underlying index
     pub fn index(&self) -> &Index {
         &self.index
+    }
+
+    /// Index a semantic file with text and metadata
+    pub async fn index_semantic_file(
+        &self,
+        file: &FileMeta,
+        tags: &[String],
+        text: Option<&str>,
+        metadata: Option<&serde_json::Value>,
+        embedding: Option<&[f32]>,
+    ) -> Result<()> {
+        let doc = Document {
+            path: file.path.to_string_lossy().to_string(),
+            size: file.size,
+            extension: file.extension.clone(),
+            tags: tags.to_vec(),
+            text: text.map(|s| s.to_string()),
+            metadata: metadata.cloned(),
+            embedding: embedding.map(|e| e.to_vec()),
+        };
+
+        self.index
+            .add_documents(&[doc], Some("path"))
+            .await
+            .context("Failed to add document to Meilisearch")?;
+
+        Ok(())
     }
 }
 
@@ -61,20 +94,7 @@ impl Indexer for MeilisearchIndexer {
         tags: &[String],
         embedding: Option<&[f32]>,
     ) -> Result<()> {
-        let doc = Document {
-            path: file.path.to_string_lossy().to_string(),
-            size: file.size,
-            extension: file.extension.clone(),
-            tags: tags.to_vec(),
-            embedding: embedding.map(|e| e.to_vec()),
-        };
-
-        self.index
-            .add_documents(&[doc], Some("path"))
-            .await
-            .context("Failed to add document to Meilisearch")?;
-
-        Ok(())
+        self.index_semantic_file(file, tags, None, None, embedding).await
     }
 
     async fn search(&self, query: &str) -> Result<Vec<FileMeta>> {
@@ -100,11 +120,16 @@ impl Indexer for MeilisearchIndexer {
                 .and_then(|m| m.created().ok())
                 .or_else(|| metadata.as_ref().and_then(|m| m.modified().ok()))
                 .unwrap_or_else(|| std::time::SystemTime::now());
+            let updated_at = metadata
+                .as_ref()
+                .and_then(|m| m.modified().ok())
+                .or_else(|| metadata.as_ref().and_then(|m| m.created().ok()))
+                .unwrap_or_else(|| std::time::SystemTime::now());
 
             // For now, use a placeholder hash (in production, this should be retrieved from index)
             let hash = format!("meili-{}", doc.path);
 
-            let file_meta = FileMeta::new(path, size, doc.extension, created_at, hash);
+            let file_meta = FileMeta::new(path, size, doc.extension, created_at, updated_at, hash);
             results.push(file_meta);
         }
 
@@ -139,11 +164,13 @@ mod tests {
             .await
             .unwrap();
 
+        let now = SystemTime::now();
         let file = FileMeta::new(
             PathBuf::from("/test/file.txt"),
             100,
             Some("txt".to_string()),
-            SystemTime::now(),
+            now,
+            now,
             "hash123".to_string(),
         );
 

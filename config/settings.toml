@@ -7,7 +7,7 @@
 url = "http://127.0.0.1:7700"
 # Optional API key (can also be set via MEILI_MASTER_KEY env var)
 # Leave empty for development (matches docker-compose default)
-# api_key = ""
+api_key = "DEqtxT7zLKqHuxnF0-LC4pxWzkj8Zb_8w9epacw2f5o"
 # Default index name
 index_name = "cognifs"
 
@@ -22,7 +22,9 @@ model = "nomic-embed-text"
 # LLM settings for intelligent tag generation
 provider = "local"
 # Path to GGUF model file (supports ~ expansion)
-model_path = "~/.local/share/models/guff/model.bin"
+# Default downloads to: ~/.local/share/models/guff/mistral-7b-instruct-v0.2.Q4_K_M.gguf
+# Run: ./scripts/download-model.sh to download a 7B model
+model_path = "/Users/lsh/.local/share/models/guff/mistral-7b-instruct-v0.2.Q4_K_M.gguf"
 # Executable name for local LLM (guff, llama.cpp, etc.)
 executable = "guff"
 

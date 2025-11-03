@@ -44,6 +44,17 @@ struct OllamaEmbeddingResponse {
 #[async_trait::async_trait]
 impl EmbeddingProvider for LocalEmbeddingProvider {
     async fn compute_embedding(&self, content: &str) -> Result<Vec<f32>> {
+        // Ensure content is not empty and has minimum length
+        let content = content.trim();
+        if content.is_empty() {
+            anyhow::bail!("Cannot generate embedding for empty content");
+        }
+        
+        // Some embedding models require minimum content length
+        if content.len() < 3 {
+            anyhow::bail!("Content too short ({} chars) to generate embedding. Minimum: 3 characters", content.len());
+        }
+        
         let url = format!("{}/api/embeddings", self.base_url);
         
         let request = OllamaEmbeddingRequest {
@@ -70,6 +81,13 @@ impl EmbeddingProvider for LocalEmbeddingProvider {
             .json()
             .await
             .context("Failed to parse Ollama embedding response")?;
+
+        // Handle empty or invalid embeddings
+        if embedding_response.embedding.is_empty() {
+            anyhow::bail!(
+                "Ollama returned empty embedding (dimension 0). This usually means the input content was too short or empty."
+            );
+        }
 
         if embedding_response.embedding.len() != self.dimension {
             anyhow::bail!(

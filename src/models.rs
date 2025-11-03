@@ -13,6 +13,8 @@ pub struct FileMeta {
     pub extension: Option<String>,
     /// Creation time
     pub created_at: SystemTime,
+    /// Last modification time
+    pub updated_at: SystemTime,
     /// Blake3 hash of file contents
     pub hash: String,
 }
@@ -24,6 +26,7 @@ impl FileMeta {
         size: u64,
         extension: Option<String>,
         created_at: SystemTime,
+        updated_at: SystemTime,
         hash: String,
     ) -> Self {
         Self {
@@ -31,6 +34,7 @@ impl FileMeta {
             size,
             extension,
             created_at,
+            updated_at,
             hash,
         }
     }
@@ -46,12 +50,14 @@ mod tests {
         let now = SystemTime::now();
         let hash = "abc123".to_string();
 
-        let meta = FileMeta::new(path.clone(), 100, Some("txt".to_string()), now, hash.clone());
+        let meta = FileMeta::new(path.clone(), 100, Some("txt".to_string()), now, now, hash.clone());
 
         assert_eq!(meta.path, path);
         assert_eq!(meta.size, 100);
         assert_eq!(meta.extension, Some("txt".to_string()));
         assert_eq!(meta.hash, hash);
+        assert_eq!(meta.created_at, now);
+        assert_eq!(meta.updated_at, now);
     }
 
     #[test]
@@ -60,7 +66,7 @@ mod tests {
         let now = SystemTime::now();
         let hash = "def456".to_string();
 
-        let meta = FileMeta::new(path, 200, None, now, hash);
+        let meta = FileMeta::new(path, 200, None, now, now, hash);
 
         assert_eq!(meta.extension, None);
         assert_eq!(meta.size, 200);
@@ -72,7 +78,7 @@ mod tests {
         let now = SystemTime::now();
         let hash = "hash123".to_string();
 
-        let meta = FileMeta::new(path, 300, Some("json".to_string()), now, hash);
+        let meta = FileMeta::new(path, 300, Some("json".to_string()), now, now, hash);
 
         let serialized = serde_json::to_string(&meta).unwrap();
         let deserialized: FileMeta = serde_json::from_str(&serialized).unwrap();
@@ -81,6 +87,8 @@ mod tests {
         assert_eq!(meta.size, deserialized.size);
         assert_eq!(meta.extension, deserialized.extension);
         assert_eq!(meta.hash, deserialized.hash);
+        assert_eq!(meta.created_at, deserialized.created_at);
+        assert_eq!(meta.updated_at, deserialized.updated_at);
     }
 }
 

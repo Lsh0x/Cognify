@@ -1,4 +1,4 @@
-use crate::tagger::{generic::GenericHandler, text::MarkdownHandler, text::TextHandler, Taggable};
+use crate::tagger::{document::PdfHandler, generic::GenericHandler, text::MarkdownHandler, text::TextHandler, Taggable};
 use std::sync::Arc;
 
 /// Registry for managing file type handlers
@@ -15,7 +15,8 @@ impl TaggerRegistry {
             generic: Arc::new(GenericHandler::new()),
         };
 
-        // Register default handlers
+        // Register default handlers (order matters: most specific first)
+        registry.register(Arc::new(PdfHandler::new()));
         registry.register(Arc::new(TextHandler::new()));
         registry.register(Arc::new(MarkdownHandler::new()));
 

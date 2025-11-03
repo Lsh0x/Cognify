@@ -19,7 +19,7 @@ impl Taggable for GenericHandler {
     }
 
     async fn generate_tags(&self, _content: &str) -> Result<Vec<String>> {
-        // Return generic tags based on extension or metadata
+        // Return generic tags - will be enhanced with path-based tags in main.rs
         Ok(vec!["unknown".to_string()])
     }
 
@@ -52,11 +52,13 @@ mod tests {
     #[tokio::test]
     async fn test_generic_handler_extract_text_returns_empty() {
         let handler = GenericHandler::new();
+        let now = SystemTime::now();
         let file = FileMeta::new(
             PathBuf::from("/test/file.xyz"),
             0,
             Some("xyz".to_string()),
-            SystemTime::now(),
+            now,
+            now,
             "hash".to_string(),
         );
 

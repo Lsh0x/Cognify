@@ -1,5 +1,8 @@
 pub mod config;
+pub mod constants;
 pub mod embeddings;
+pub mod extractor;
+pub mod file;
 pub mod indexer;
 pub mod llm;
 pub mod models;

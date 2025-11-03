@@ -5,10 +5,11 @@ services:
     image: getmeili/meilisearch:latest
     container_name: cognifs-meilisearch
     ports:
-      - "127.0.0.1:7700:7700"
+      - "7700:7700"
     environment:
       - MEILI_MASTER_KEY=${MEILI_MASTER_KEY:-}
       - MEILI_ENV=development
+      - MEILI_HTTP_ADDR=0.0.0.0:7700
     volumes:
       - ./data/meili_data:/meili_data
     restart: unless-stopped
@@ -22,13 +23,18 @@ services:
     image: ollama/ollama:latest
     container_name: cognifs-ollama
     ports:
-      - "127.0.0.1:11434:11434"
+      - "11434:11434"
     volumes:
       - ./data/ollama_data:/root/.ollama
+      - ./scripts/init-ollama.sh:/init-ollama.sh:ro
+    environment:
+      - OLLAMA_MODEL=nomic-embed-text
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:11434/api/tags"]
+      test: ["CMD-SHELL", "OLLAMA_HOST=http://127.0.0.1:11434 ollama list >/dev/null 2>&1 || exit 1"]
       interval: 10s
       timeout: 5s
       retries: 5
-
+    # Initialize Ollama with embedding model after startup
+    # Note: This requires running the init script manually after first startup
+    # or using a separate init container/service

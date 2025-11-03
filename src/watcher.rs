@@ -134,6 +134,10 @@ impl FileWatcher {
             .created()
             .or_else(|_| metadata.modified())
             .unwrap_or_else(|_| SystemTime::now());
+        let updated_at = metadata
+            .modified()
+            .or_else(|_| metadata.created())
+            .unwrap_or_else(|_| SystemTime::now());
 
         let hash = tokio::task::spawn_blocking({
             let path = path.to_path_buf();
@@ -141,7 +145,7 @@ impl FileWatcher {
         })
         .await??;
 
-        Ok(FileMeta::new(path.to_path_buf(), size, extension, created_at, hash))
+        Ok(FileMeta::new(path.to_path_buf(), size, extension, created_at, updated_at, hash))
     }
 }
 

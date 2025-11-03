@@ -112,6 +112,23 @@ Skip confirmation with `--yes` (use with caution):
 cognifs organize ~/Documents/ --yes
 ```
 
+Enable intelligent LLM-powered tag generation (requires LLM configured in `settings.toml`):
+
+```bash
+cognifs organize ~/Documents/ --use-llm
+```
+
+The `--use-llm` flag enhances tag generation by using your local LLM (guff/llama.cpp) to understand file content semantically. If the LLM is not available, it falls back to dictionary-based tagging.
+
+**Protected Structures**: Cognifs automatically detects and skips files inside protected directory structures to preserve their organization. These include:
+
+- **Version Control Systems**: Git (`.git`), Mercurial (`.hg`), Subversion (`.svn`), Bazaar (`.bzr`), CVS, Fossil (`.fossil`)
+- **Project Dependencies**: `node_modules`, `target` (Rust), `dist`, `build`, `.gradle`, `.mvn`
+- **Virtual Environments**: `venv`, `.venv`, `env`, `.env`, `__pycache__`, `.pytest_cache`, `.tox`, `.mypy_cache`
+- **Project Config Files**: When files like `package.json`, `Cargo.toml`, `go.mod`, `requirements.txt`, `pom.xml`, `build.gradle`, `composer.json`, `Gemfile`, `docker-compose.yml`, or `Dockerfile` are found, the entire project directory is protected
+
+Files inside these protected structures will not be moved or reorganized.
+
 ## ⚙️ Configuration
 
 Cognifs uses a TOML configuration file (`config/settings.toml`) for default settings. All settings can be overridden via command-line flags.
@@ -136,7 +153,14 @@ model_path = "~/.local/share/models/guff/model.bin"
 executable = "guff"
 ```
 
-**Note**: The default settings match the docker-compose.yml services. You can override any setting via CLI flags.
+**Note**: The default settings match the docker-compose.yml services.
+
+**Important**: After starting Ollama with Docker Compose, you must initialize it with the embedding model:
+```bash
+./scripts/init-ollama-container.sh nomic-embed-text
+```
+
+You can override any setting via CLI flags.
 
 ### LLM Configuration
 
@@ -151,9 +175,19 @@ executable = "guff"
 
 #### Getting GGUF Model Files
 
-Cognifs uses local LLM models in GGUF format. Here's how to get them:
+Cognifs uses local LLM models in GGUF format. The easiest way to get a model is using the provided script:
 
-**Option 1: Using Hugging Face**
+**Quick Download (Recommended)**
+
+Run the download script to get a 7B model (~4GB):
+
+```bash
+./scripts/download-model.sh
+```
+
+This downloads Mistral-7B-Instruct-v0.2 (Q4_K_M quantization) to `~/.local/share/models/guff/`.
+
+**Manual Download from Hugging Face**
 
 1. Visit [Hugging Face Models](https://huggingface.co/models?library=gguf)
 2. Search for a compatible model (e.g., "llama", "mistral", "phi")
@@ -188,9 +222,11 @@ Popular sources for pre-converted GGUF models:
 
 ### Embeddings
 
-Embeddings use Ollama by default (http://127.0.0.1:11434). Supported models:
-- `nomic-embed-text` (768 dimensions) - default
-- `mxbai-embed-large` (1024 dimensions)
+Embeddings use Ollama by default (http://localhost:11434). Supported models:
+- `nomic-embed-text` (768 dimensions) - default, smaller and faster
+- `mxbai-embed-large` (1024 dimensions) - larger, potentially more accurate
+
+**Important**: The embedding model must be downloaded before use. See [Using Docker Compose](#using-docker-compose) section for initialization instructions.
 
 ### Overriding Configuration
 
@@ -209,17 +245,51 @@ cognifs tag file.txt --embedding-model mxbai-embed-large
 The easiest way to run all dependencies is using Docker Compose:
 
 ```bash
+# Start all services
 docker-compose up -d
+
+# Initialize Ollama with embedding models (required on first run)
+./scripts/init-ollama-container.sh nomic-embed-text
 ```
 
 This will start:
-- **Meilisearch** on `http://127.0.0.1:7700`
-- **Ollama** on `http://127.0.0.1:11434`
+- **Meilisearch** on `http://localhost:7700` (accessible from host, bound to 0.0.0.0)
+- **Ollama** on `http://localhost:11434` (accessible from host, bound to all interfaces)
+
+**Note**: The services are configured to be accessible from the host machine. For production, consider restricting access.
+
+**Important**: After starting Ollama for the first time, you must pull the embedding model. Run:
+
+```bash
+./scripts/init-ollama-container.sh nomic-embed-text
+```
+
+Or for the larger model:
+
+```bash
+./scripts/init-ollama-container.sh mxbai-embed-large
+```
+
+The initialization script will:
+- Verify that the Ollama container is running (exits with error if not)
+- Wait for Ollama API to be ready (checks via host port using `curl`)
+- Check if the model is already downloaded using `ollama list`
+- Pull the model if needed (this may take a few minutes on first run)
+
+**Note**: The script uses `curl` from the host to check Ollama readiness, avoiding dependencies inside the container. The healthcheck in docker-compose uses `ollama list` directly.
+
+**Note**: Models are persisted in `./data/ollama_data`, so you only need to pull them once.
 
 To stop all services:
 
 ```bash
 docker-compose down
+```
+
+To restart after pulling models:
+
+```bash
+docker-compose restart
 ```
 
 ### Manual Setup
@@ -238,15 +308,38 @@ Or use [Meilisearch Cloud](https://www.meilisearch.com/cloud).
 
 Install Ollama following the [official instructions](https://ollama.ai), then pull the embedding models:
 
+**Using Docker Compose (recommended)**:
+
 ```bash
-# Using local Ollama installation
+# Start Ollama
+docker-compose up -d ollama
+
+# Pull the embedding model using the initialization script
+./scripts/init-ollama-container.sh nomic-embed-text
+
+# Or manually:
+docker exec cognifs-ollama ollama pull nomic-embed-text
+```
+
+**Using local Ollama installation**:
+
+```bash
+# Pull embedding models
 ollama pull nomic-embed-text
 # or for larger model
 ollama pull mxbai-embed-large
+```
 
-# Or using docker-compose
-docker exec cognifs-ollama ollama pull nomic-embed-text
-docker exec cognifs-ollama ollama pull mxbai-embed-large
+**Available embedding models**:
+- `nomic-embed-text` (768 dimensions) - default, smaller and faster
+- `mxbai-embed-large` (1024 dimensions) - larger, potentially more accurate
+
+Update your `config/settings.toml` to use a different model:
+
+```toml
+[ollama]
+url = "http://127.0.0.1:11434"
+model = "mxbai-embed-large"  # Change this to use a different model
 ```
 
 ## 🧱 Project Structure
