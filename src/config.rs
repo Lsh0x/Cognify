@@ -25,6 +25,12 @@ pub struct MeilisearchConfig {
 pub struct OllamaConfig {
     pub url: String,
     pub model: String,
+    #[serde(default = "default_embedding_dims")]
+    pub dims: usize,
+}
+
+fn default_embedding_dims() -> usize {
+    768 // Default to nomic-embed-text dimension
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -92,6 +98,7 @@ impl Default for Config {
             ollama: OllamaConfig {
                 url: "http://127.0.0.1:11434".to_string(),
                 model: "nomic-embed-text".to_string(),
+                dims: 768,
             },
             llm: LlmConfig {
                 provider: "local".to_string(),
@@ -131,6 +138,7 @@ index_name = "test"
 [ollama]
 url = "http://localhost:11434"
 model = "mxbai-embed-large"
+dims = 1024
 "#,
         )
         .unwrap();

@@ -55,6 +55,27 @@ impl SemanticSource for MdFile {
         Ok(None)
     }
 
+    async fn generate_tags(&self, content: &str) -> Result<Vec<String>> {
+        // Start with default implementation
+        use crate::file::r#trait::generate_tags_default;
+        let mut tags = generate_tags_default(self.path(), self.extension(), content);
+
+        // Check for markdown-specific patterns
+        let content_lower = content.to_lowercase();
+        if content_lower.contains("#") {
+            tags.push("documentation".to_string());
+        }
+        if content_lower.contains("```") {
+            tags.push("code".to_string());
+        }
+
+        // Remove duplicates
+        let mut seen = std::collections::HashSet::new();
+        Ok(tags.into_iter()
+            .filter(|tag| seen.insert(tag.clone()))
+            .collect())
+    }
+
     fn path(&self) -> &Path {
         &self.path
     }

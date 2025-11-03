@@ -16,7 +16,10 @@ index_name = "cognifs"
 url = "http://127.0.0.1:11434"
 # Default embedding model
 # Options: "nomic-embed-text" (768 dims) or "mxbai-embed-large" (1024 dims)
-model = "nomic-embed-text"
+model = "mxbai-embed-large"
+# Embedding dimension (must match the model's actual dimension)
+# Common values: 768 (nomic-embed-text), 1024 (mxbai-embed-large)
+dims = 1024
 
 [llm]
 # LLM settings for intelligent tag generation

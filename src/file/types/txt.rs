@@ -55,6 +55,19 @@ impl SemanticSource for TxtFile {
         Ok(None)
     }
 
+    async fn generate_tags(&self, content: &str) -> Result<Vec<String>> {
+        // Start with default implementation
+        use crate::file::r#trait::generate_tags_default;
+        let mut tags = generate_tags_default(self.path(), self.extension(), content);
+
+        // Add "text" tag if no content-based tags found
+        if tags.iter().all(|t| t == "txt" || t == "unknown") {
+            tags.push("text".to_string());
+        }
+
+        Ok(tags)
+    }
+
     fn path(&self) -> &Path {
         &self.path
     }

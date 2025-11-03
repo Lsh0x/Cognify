@@ -128,6 +128,54 @@ impl SemanticSource for PdfFile {
         Ok(metadata_result)
     }
 
+    async fn generate_tags(&self, content: &str) -> Result<Vec<String>> {
+        // Start with default implementation
+        use crate::file::r#trait::generate_tags_default;
+        let mut tags = generate_tags_default(self.path(), self.extension(), content);
+
+        // PDF-specific keywords
+        let pdf_keywords: std::collections::HashMap<&str, &str> = [
+            ("invoice", "financial"),
+            ("receipt", "financial"),
+            ("statement", "financial"),
+            ("bill", "financial"),
+            ("payment", "financial"),
+            ("tax", "financial"),
+            ("report", "reporting"),
+            ("meeting", "calendar"),
+            ("minutes", "calendar"),
+            ("agenda", "calendar"),
+            ("contract", "legal"),
+            ("agreement", "legal"),
+            ("nda", "legal"),
+            ("resume", "personal"),
+            ("cv", "personal"),
+            ("certificate", "personal"),
+            ("diploma", "personal"),
+        ]
+        .iter()
+        .cloned()
+        .collect();
+
+        let content_lower = content.to_lowercase();
+        
+        // Always add "document" tag for PDFs
+        tags.push("document".to_string());
+
+        // Add PDF-specific tags
+        for (keyword, tag) in pdf_keywords.iter() {
+            if content_lower.contains(keyword) && !tags.contains(&tag.to_string()) {
+                tags.push(tag.to_string());
+            }
+        }
+
+        // Remove duplicates
+        let mut seen = std::collections::HashSet::new();
+        Ok(tags.into_iter()
+            .filter(|tag| seen.insert(tag.clone()))
+            .collect())
+    }
+
     fn path(&self) -> &Path {
         &self.path
     }

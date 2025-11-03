@@ -8,7 +8,6 @@ use cognifs::{
     llm::{LlmProvider, LocalLlmProvider},
     models::FileMeta,
     organizer::{FileMover, FolderGenerator, PreviewTree},
-    tagger::TaggerRegistry,
     utils,
     watcher::FileWatcher,
 };
@@ -140,10 +139,6 @@ async fn main() -> Result<()> {
                 .or_else(|_| metadata.created())
                 .unwrap_or_else(|_| std::time::SystemTime::now());
 
-            // Get handler before moving extension
-            let registry = TaggerRegistry::new();
-            let handler = registry.get_handler(extension_str);
-
             let file_meta = FileMeta::new(
                 file.clone(),
                 metadata.len(),
@@ -153,17 +148,24 @@ async fn main() -> Result<()> {
                 hash,
             );
 
-            let content = handler.extract_text(&file_meta).await?;
+            // Use SemanticSource for text extraction and tagging
+            let semantic_source = FileFactory::create_from_meta(&file_meta);
+            let content = semantic_source.to_text().await?;
             println!("Extracted {} bytes of text", content.len());
 
             // Generate tags
-            let tags = handler.generate_tags(&content).await?;
+            let tags = semantic_source.generate_tags(&content).await?;
             println!("Tags: {:?}", tags);
 
             // Optionally compute embedding
             let ollama_url = config.ollama.url.as_str();
             let embedding_model = config.ollama.model.as_str();
-            let embedding_provider = LocalEmbeddingProvider::new(Some(ollama_url), Some(embedding_model));
+            let embedding_dims = config.ollama.dims;
+            let embedding_provider = LocalEmbeddingProvider::new(
+                Some(ollama_url),
+                Some(embedding_model),
+                Some(embedding_dims),
+            );
             match embedding_provider.compute_embedding(&content).await {
                 Ok(embedding) => {
                     println!("Embedding computed: {} dimensions", embedding.len());
@@ -191,9 +193,11 @@ async fn main() -> Result<()> {
             // Initialize embedding provider for semantic search
             let ollama_url = config.ollama.url.as_str();
             let embedding_model = config.ollama.model.as_str();
+            let embedding_dims = config.ollama.dims;
             let embedding_provider = LocalEmbeddingProvider::new(
                 Some(ollama_url),
                 Some(embedding_model),
+                Some(embedding_dims),
             );
             
             println!("📊 Generating embeddings with model: {} ({} dimensions)", 
@@ -288,12 +292,9 @@ async fn main() -> Result<()> {
                     }
                 };
 
-                // Generate tags using handler (for now, we keep using the tagger registry)
-                // In the future, we could integrate LLM tagging here
-                let registry = TaggerRegistry::new();
-                let handler = registry.get_handler(extension_str);
+                // Generate tags using SemanticSource
                 let content_for_tags = text.as_deref().unwrap_or("");
-                let tags = handler.generate_tags(content_for_tags).await?;
+                let tags = semantic_source.generate_tags(content_for_tags).await?;
 
                 // Generate embedding for semantic search
                 // Use extracted text if available, otherwise fallback to filename + tags
@@ -488,9 +489,11 @@ async fn main() -> Result<()> {
             // Initialize embedding provider for semantic clustering
             let ollama_url = config.ollama.url.as_str();
             let embedding_model = config.ollama.model.as_str();
+            let embedding_dims = config.ollama.dims;
             let embedding_provider = LocalEmbeddingProvider::new(
                 Some(ollama_url),
                 Some(embedding_model),
+                Some(embedding_dims),
             );
             
             println!("📊 Using embeddings for semantic clustering (model: {}, {} dimensions)", 
@@ -561,21 +564,9 @@ async fn main() -> Result<()> {
                     }
                 };
 
-                // Generate tags using handler (for now, we keep using the tagger registry)
-                let registry = TaggerRegistry::new();
-                let handler = registry.get_handler(extension_str);
+                // Generate tags using SemanticSource (already includes path-based tags)
                 let content_for_tags = text.as_deref().unwrap_or("");
-                let mut tags = handler.generate_tags(content_for_tags).await?;
-                
-                // Enhance tags with path context (filename, parent directories)
-                // This helps especially for files that can't be read (PDFs, images, etc.)
-                use cognifs::organizer::extract_tags_from_path;
-                let path_tags = extract_tags_from_path(path);
-                for path_tag in path_tags {
-                    if !tags.contains(&path_tag) {
-                        tags.push(path_tag);
-                    }
-                }
+                let mut tags = semantic_source.generate_tags(content_for_tags).await?;
                 
                 // Extract tags from file extension if meaningful
                 use cognifs::constants::{
@@ -688,13 +679,6 @@ async fn main() -> Result<()> {
                     }
                 };
 
-                // Store embedding and tags for clustering (before creating FilePlan)
-                let file_index = file_plans.len();
-                if let Some(ref emb) = embedding {
-                    file_embeddings.push((file_index, emb.clone()));
-                }
-                file_tags_map.insert(file_index, tags.clone());
-
                 // Check for existing matching directory first (try hierarchical matching)
                 let folder_path = match generator.find_matching_directory_hierarchical(&tags, &dir) {
                     Some(existing_path) => {
@@ -727,6 +711,16 @@ async fn main() -> Result<()> {
                     );
 
                     if path != dest_file {
+                        // Calculate file_index AFTER checking protection, so it matches file_plans index
+                        let file_index = file_plans.len();
+                        
+                        // Store embedding and tags for clustering (ONLY for non-protected files)
+                        // This ensures indices in file_embeddings/file_tags_map match file_plans indices
+                        if let Some(ref emb) = embedding {
+                            file_embeddings.push((file_index, emb.clone()));
+                        }
+                        file_tags_map.insert(file_index, tags.clone());
+                        
                         file_plans.push(FilePlan {
                             source: path.to_path_buf(),
                             destination: dest_file,
@@ -736,6 +730,7 @@ async fn main() -> Result<()> {
                     }
                 } else {
                     // Protected file: analyzed (tags + embeddings) but not moved
+                    // Do NOT add to file_embeddings/file_tags_map because it's not in file_plans
                     skipped_git_files += 1;
                 }
 
