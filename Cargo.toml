@@ -15,6 +15,7 @@ anyhow = "1.0"
 tokio = { version = "1.35", features = ["full"] }
 async-trait = "0.1"
 meilisearch-sdk = "0.28"
+reqwest = { version = "0.12", features = ["json"] }
 
 [dev-dependencies]
 tempfile = "3.10"
