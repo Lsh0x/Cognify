@@ -130,7 +130,27 @@ Embeddings use Ollama by default (http://127.0.0.1:11434). Supported models:
 - `nomic-embed-text` (768 dimensions) - default
 - `mxbai-embed-large` (1024 dimensions)
 
-### Meilisearch
+### Using Docker Compose
+
+The easiest way to run all dependencies is using Docker Compose:
+
+```bash
+docker-compose up -d
+```
+
+This will start:
+- **Meilisearch** on `http://127.0.0.1:7700`
+- **Ollama** on `http://127.0.0.1:11434`
+
+To stop all services:
+
+```bash
+docker-compose down
+```
+
+### Manual Setup
+
+#### Meilisearch
 
 Start a local Meilisearch instance:
 
@@ -138,7 +158,17 @@ Start a local Meilisearch instance:
 docker run -it -p 7700:7700 -v $(pwd)/meili_data:/meili_data getmeili/meilisearch:latest
 ```
 
-Or use Meilisearch Cloud.
+Or use [Meilisearch Cloud](https://www.meilisearch.com/cloud).
+
+#### Ollama
+
+Install Ollama following the [official instructions](https://ollama.ai), then pull the embedding models:
+
+```bash
+ollama pull nomic-embed-text
+# or for larger model
+ollama pull mxbai-embed-large
+```
 
 ## 🧱 Project Structure
 
