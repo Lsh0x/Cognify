@@ -2,6 +2,7 @@ pub mod embeddings;
 pub mod indexer;
 pub mod llm;
 pub mod models;
+pub mod organizer;
 pub mod tagger;
 pub mod utils;
 pub mod watcher;
