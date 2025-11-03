@@ -1,8 +1,12 @@
-pub fn default_fn() -> i32 {
-    42
-}
+pub mod indexer;
+pub mod llm;
+pub mod models;
+pub mod tagger;
+pub mod utils;
+pub mod watcher;
 
-#[test]
-fn test_default_fn() {
-    assert_eq!(default_fn(), 42);
-}
+pub use indexer::Indexer;
+pub use llm::LlmProvider;
+pub use models::FileMeta;
+pub use tagger::Taggable;
+pub use watcher::{FileWatcher, WatchEvent};
