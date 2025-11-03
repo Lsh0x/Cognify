@@ -1,8 +1,8 @@
 # Changelog
 
-## [Unreleased](https://github.com/Lsh0x/rbase/tree/HEAD)
+## [Unreleased](https://github.com/lsh0x/Cognify/tree/HEAD)
 
-[Full Changelog](https://github.com/Lsh0x/rbase/compare/f9d6d027ed2e0164435e56e6c12f0184422a79c8...HEAD)
+[Full Changelog](https://github.com/lsh0x/Cognify/compare/f9d6d027ed2e0164435e56e6c12f0184422a79c8...HEAD)
 
 **Merged pull requests:**
 
