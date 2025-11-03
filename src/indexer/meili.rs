@@ -7,28 +7,32 @@ use serde_json::Value;
 
 /// Document structure for Meilisearch
 #[derive(Debug, Serialize, Deserialize)]
-struct Document {
-    id: String, // Stable identifier: hash(path) only (no timestamp)
+pub struct Document {
+    id: String, // Hash(file_hash + updated_at) - allows multiple versions of same content
     path: String,
     file_hash: String, // Blake3 hash of file content for change detection
     size: u64,
     extension: Option<String>,
-    tags: Vec<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    text: Option<String>,
+    // tags and text removed - not stored in Meilisearch
     #[serde(skip_serializing_if = "Option::is_none")]
     metadata: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     embedding: Option<Vec<f32>>,
 }
 
-/// Generate a stable document ID from file path (hash only, no timestamp)
-/// This allows us to update existing documents instead of creating duplicates
-fn generate_doc_id(path: &std::path::Path) -> String {
-    let path_str = path.to_string_lossy();
-    let hash = blake3::hash(path_str.as_bytes());
-    // Use first 32 hex chars of hash for a stable ID
-    // Same path = same ID, allowing updates instead of duplicates
+/// Generate a document ID from file hash and updated_at timestamp
+/// This allows multiple versions of the same content (different timestamps) to coexist
+pub(crate) fn generate_doc_id(file_hash: &str, updated_at: &std::time::SystemTime) -> String {
+    // Convert SystemTime to a string representation (seconds since UNIX_EPOCH)
+    let timestamp = updated_at
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    
+    // Combine hash and timestamp for unique ID
+    let combined = format!("{}:{}", file_hash, timestamp);
+    let hash = blake3::hash(combined.as_bytes());
+    // Use first 32 hex chars of hash for the ID
     format!("doc_{}", &hash.to_hex()[..32])
 }
 
@@ -128,30 +132,67 @@ impl MeilisearchIndexer {
         &self.index
     }
 
-    /// Index a semantic file with text and metadata
-    /// This will update the document if it already exists (same path = same ID)
+    /// Delete all documents with a specific path
+    /// Useful when a file is deleted - removes all versions of that file
+    pub async fn delete_by_path(&self, path: &std::path::Path) -> Result<usize> {
+        let path_str = path.to_string_lossy().to_string();
+        
+        // Search for all documents with this path
+        let search_results: SearchResults<Document> = self
+            .index
+            .search()
+            .with_query(&path_str)
+            .with_limit(1000)
+            .execute()
+            .await
+            .context("Failed to search for documents to delete")?;
+        
+        // Collect all IDs to delete
+        let mut to_delete = Vec::new();
+        for hit in search_results.hits {
+            if hit.result.path == path_str {
+                to_delete.push(hit.result.id);
+            }
+        }
+        
+        if to_delete.is_empty() {
+            return Ok(0);
+        }
+        
+        self.index
+            .delete_documents(&to_delete)
+            .await
+            .context("Failed to delete documents by path")?;
+        
+        Ok(to_delete.len())
+    }
+
+    /// Index a semantic file with metadata and embedding (no tags, no text stored)
+    /// ID is based on file hash + updated_at, allowing multiple versions of same content
     pub async fn index_semantic_file(
         &self,
         file: &FileMeta,
-        tags: &[String],
-        text: Option<&str>,
+        tags: &[String], // Not stored, but used for embedding generation
+        text: Option<&str>, // Not stored, but used for embedding generation
         metadata: Option<&serde_json::Value>,
         embedding: Option<&[f32]>,
     ) -> Result<()> {
-        let doc_id = generate_doc_id(&file.path);
+        // Generate ID from file hash + updated_at timestamp
+        let doc_id = generate_doc_id(&file.hash, &file.updated_at);
+        
         let doc = Document {
             id: doc_id,
             path: file.path.to_string_lossy().to_string(),
             file_hash: file.hash.clone(), // Store file hash for change detection
             size: file.size,
             extension: file.extension.clone(),
-            tags: tags.to_vec(),
-            text: text.map(|s| s.to_string()),
+            // tags and text are NOT stored in Meilisearch
             metadata: metadata.cloned(),
             embedding: embedding.map(|e| e.to_vec()),
         };
 
         // add_documents with same ID will update existing document
+        // But with hash + timestamp, same content at different times = different documents
         self.index
             .add_documents(&[doc], Some("id"))
             .await
@@ -179,18 +220,24 @@ impl MeilisearchIndexer {
             .collect())
     }
 
-    /// Delete documents for files that no longer exist
+    /// Delete documents for files that no longer exist (by path)
+    /// Note: Since ID is now based on hash + timestamp, we need to search by path
     pub async fn delete_missing_files(&self, existing_paths: &std::collections::HashSet<String>) -> Result<usize> {
-        // Get all indexed paths
-        let indexed_paths = self.get_all_indexed_paths().await?;
+        // Get all indexed documents
+        let search_results: SearchResults<Document> = self
+            .index
+            .search()
+            .with_query("")
+            .with_limit(10000)
+            .execute()
+            .await
+            .context("Failed to search all documents")?;
         
-        // Find paths that are indexed but no longer exist on filesystem
+        // Find documents whose path no longer exists
         let mut to_delete = Vec::new();
-        for indexed_path in indexed_paths {
-            if !existing_paths.contains(&indexed_path) {
-                // Generate ID for this path to delete it
-                let doc_id = generate_doc_id(std::path::Path::new(&indexed_path));
-                to_delete.push(doc_id);
+        for hit in search_results.hits {
+            if !existing_paths.contains(&hit.result.path) {
+                to_delete.push(hit.result.id.clone());
             }
         }
 
@@ -321,8 +368,8 @@ impl Indexer for MeilisearchIndexer {
                 .or_else(|| metadata.as_ref().and_then(|m| m.created().ok()))
                 .unwrap_or_else(|| std::time::SystemTime::now());
 
-            // For now, use a placeholder hash (in production, this should be retrieved from index)
-            let hash = format!("meili-{}", doc.path);
+            // Use the file_hash from the document
+            let hash = doc.file_hash.clone();
 
             let file_meta = FileMeta::new(path, size, doc.extension, created_at, updated_at, hash);
             results.push(file_meta);

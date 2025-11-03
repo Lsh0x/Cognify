@@ -8,7 +8,27 @@ license = "GPL-3.0"
 
 [[bin]]
 name = "cognifs"
-path = "src/main.rs"
+path = "src/bin/cognifs.rs"
+
+[[bin]]
+name = "cognifs-watch"
+path = "src/bin/cognifs-watch.rs"
+
+[[bin]]
+name = "cognifs-tag"
+path = "src/bin/cognifs-tag.rs"
+
+[[bin]]
+name = "cognifs-index"
+path = "src/bin/cognifs-index.rs"
+
+[[bin]]
+name = "cognifs-search"
+path = "src/bin/cognifs-search.rs"
+
+[[bin]]
+name = "cognifs-organize"
+path = "src/bin/cognifs-organize.rs"
 
 [dependencies]
 notify = "6.1"

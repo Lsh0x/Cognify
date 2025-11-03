@@ -1,0 +1,318 @@
+use anyhow::{Context, Result};
+use clap::Parser;
+use cognifs::{
+    config::Config,
+    embeddings::{EmbeddingProvider, LocalEmbeddingProvider},
+    file::FileFactory,
+    indexer::MeilisearchIndexer,
+    llm::{LlmProvider, LocalLlmProvider},
+    models::FileMeta,
+    utils,
+};
+use indicatif::{ProgressBar, ProgressStyle};
+use shellexpand;
+use std::path::PathBuf;
+use walkdir::WalkDir;
+
+#[derive(Parser)]
+#[command(name = "cognifs-index")]
+#[command(about = "Index files in a directory to Meilisearch")]
+#[command(version)]
+struct Cli {
+    /// Directory to index
+    #[arg(value_name = "DIR")]
+    dir: PathBuf,
+    
+    /// Meilisearch URL (overrides config)
+    #[arg(long)]
+    meili_url: Option<String>,
+    
+    /// Meilisearch API key (overrides config and env)
+    #[arg(long)]
+    meili_key: Option<String>,
+    
+    /// Meilisearch index name (overrides config)
+    #[arg(long)]
+    index_name: Option<String>,
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let cli = Cli::parse();
+    let config = Config::load().unwrap_or_default();
+    
+    println!("Indexing directory: {}", cli.dir.display());
+    
+    let meili_url = cli.meili_url.unwrap_or_else(|| config.meilisearch.url.clone());
+    let meili_key = cli.meili_key.or_else(|| config.meilisearch_api_key());
+    let index_name = cli.index_name.unwrap_or_else(|| config.meilisearch.index_name.clone());
+    
+    let indexer = MeilisearchIndexer::new(
+        &meili_url,
+        meili_key.as_deref(),
+        &index_name,
+    )
+    .await
+    .context("Failed to create Meilisearch indexer")?;
+
+    // Initialize LLM provider for tag generation
+    let model_path = shellexpand::tilde(&config.llm.model_path).to_string();
+    let llm_provider = LocalLlmProvider::new(model_path.clone())
+        .with_executable(config.llm.executable.clone());
+    
+    let use_llm = if llm_provider.model_exists() {
+        println!("✓ Using LLM for intelligent tag generation");
+        true
+    } else {
+        println!("⚠️  LLM model not found at {}, using dictionary-based tagging", model_path);
+        false
+    };
+
+    // Initialize embedding provider for semantic search
+    let ollama_url = config.ollama.url.as_str();
+    let embedding_model = config.ollama.model.as_str();
+    let embedding_dims = config.ollama.dims;
+    let embedding_provider = LocalEmbeddingProvider::new(
+        Some(ollama_url),
+        Some(embedding_model),
+        Some(embedding_dims),
+    );
+    
+    println!("📊 Generating embeddings with model: {} ({} dimensions)", 
+             embedding_model, embedding_provider.dimension());
+
+    // First, collect all files and their metadata for sync
+    println!("📂 Scanning directory for changes...");
+    let mut all_files: Vec<FileMeta> = Vec::new();
+    
+    for entry in WalkDir::new(&cli.dir) {
+        let entry = entry?;
+        let path = entry.path();
+        
+        if !path.is_file() {
+            continue;
+        }
+        
+        // Get metadata for all files (including protected ones for sync)
+        let metadata = std::fs::metadata(path)?;
+        let extension = utils::get_extension(path);
+        let hash = utils::compute_file_hash(path)?;
+        let created_at = metadata
+            .created()
+            .or_else(|_| metadata.modified())
+            .unwrap_or_else(|_| std::time::SystemTime::now());
+        let updated_at = metadata
+            .modified()
+            .or_else(|_| metadata.created())
+            .unwrap_or_else(|_| std::time::SystemTime::now());
+        
+        let file_meta = FileMeta::new(
+            path.to_path_buf(),
+            metadata.len(),
+            extension,
+            created_at,
+            updated_at,
+            hash,
+        );
+        
+        all_files.push(file_meta);
+    }
+    
+    if all_files.is_empty() {
+        println!("No files found to index.");
+        return Ok(());
+    }
+    
+    // Sync index: remove deleted files, detect changes
+    println!("🔄 Synchronizing index...");
+    let file_refs: Vec<&FileMeta> = all_files.iter().collect();
+    let sync_stats = indexer.sync_index(&file_refs).await?;
+    
+    println!("Sync results:");
+    println!("  ✓ {} files unchanged", sync_stats.unchanged);
+    if sync_stats.updated > 0 {
+        println!("  ↻ {} files will be updated (content changed)", sync_stats.updated);
+    }
+    if sync_stats.deleted > 0 {
+        println!("  ✗ {} files removed from index (no longer exist)", sync_stats.deleted);
+    }
+    
+    // Count files for progress bar (excluding protected for indexing count)
+    let total_files: usize = all_files.iter()
+        .filter(|f| !utils::is_inside_protected_structure_with_base(&f.path, Some(&cli.dir)))
+        .count();
+    
+    if total_files == 0 {
+        println!("No files to index (all files are in protected structures).");
+        return Ok(());
+    }
+
+    let pb = ProgressBar::new(total_files as u64);
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} files indexed ({msg})")
+            .unwrap()
+            .progress_chars("#>-")
+    );
+
+    // Walk directory and index files
+    let mut count = 0;
+    let mut embedding_count = 0;
+    let mut embedding_failures = 0;
+    let mut protected_count = 0;
+    let mut llm_tag_count = 0;
+    let mut llm_tag_failures = 0;
+    
+    for file_meta in all_files.iter() {
+        let path = &file_meta.path;
+        let is_protected = utils::is_inside_protected_structure_with_base(path, Some(&cli.dir));
+        
+        let file_name = path.file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("unknown");
+        
+        if is_protected {
+            // Protected files are still indexed but not counted in progress
+            // Skip progress bar for protected files
+        } else {
+            pb.set_message(format!("Indexing: {}", file_name));
+        }
+
+        let extension_str = file_meta.extension.as_ref().map(|s| s.as_str()).unwrap_or("unknown");
+
+        // Create SemanticFile via factory
+        let semantic_source = FileFactory::create_from_meta(file_meta);
+        
+        // Extract text and metadata using SemanticSource
+        let text = match semantic_source.to_text().await {
+            Ok(t) => Some(t),
+            Err(e) => {
+                eprintln!("Warning: Failed to extract text from {}: {}", file_name, e);
+                None
+            }
+        };
+        
+        let file_metadata = match semantic_source.to_metadata().await {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("Warning: Failed to extract metadata from {}: {}", file_name, e);
+                None
+            }
+        };
+
+        // Generate tags using LLM if available, otherwise use SemanticSource
+        let content_for_tags = text.as_deref().unwrap_or("");
+        let tags = if use_llm {
+            match llm_provider.generate_tags(content_for_tags, path).await {
+                Ok(llm_tags) => {
+                    llm_tag_count += 1;
+                    llm_tags
+                }
+                Err(e) => {
+                    llm_tag_failures += 1;
+                    eprintln!("Warning: LLM tag generation failed for {}: {}, falling back to dictionary", file_name, e);
+                    // Fallback to dictionary-based tags
+                    semantic_source.generate_tags(content_for_tags).await.unwrap_or_default()
+                }
+            }
+        } else {
+            // Use dictionary-based tagging from SemanticSource
+            semantic_source.generate_tags(content_for_tags).await.unwrap_or_default()
+        };
+
+        // Generate embedding for semantic search
+        // Use extracted text if available, otherwise fallback to filename + tags
+        let embedding_content = if let Some(ref txt) = text {
+            if txt.trim().is_empty() || txt.len() < 10 {
+                // Build fallback content from filename and tags
+                let mut fallback = format!("File: {}", file_name);
+                if extension_str != "unknown" {
+                    fallback.push_str(&format!(" ({} file)", extension_str));
+                }
+                if !tags.is_empty() {
+                    fallback.push_str(". Tags: ");
+                    fallback.push_str(&tags.join(", "));
+                }
+                if fallback.len() < 20 {
+                    fallback.push_str(". Document file.");
+                }
+                fallback
+            } else {
+                txt.clone()
+            }
+        } else {
+            // No text extracted, use fallback
+            let mut fallback = format!("File: {}", file_name);
+            if extension_str != "unknown" {
+                fallback.push_str(&format!(" ({} file)", extension_str));
+            }
+            if !tags.is_empty() {
+                fallback.push_str(". Tags: ");
+                fallback.push_str(&tags.join(", "));
+            }
+            if fallback.len() < 20 {
+                fallback.push_str(". Document file.");
+            }
+            fallback
+        };
+
+        let embedding = match embedding_provider.compute_embedding(&embedding_content).await {
+            Ok(emb) => {
+                // Validate embedding is not empty
+                if emb.is_empty() {
+                    embedding_failures += 1;
+                    eprintln!("Warning: Empty embedding returned for {}, skipping", file_name);
+                    None
+                } else {
+                    embedding_count += 1;
+                    Some(emb)
+                }
+            }
+            Err(e) => {
+                embedding_failures += 1;
+                eprintln!("Warning: Failed to generate embedding for {}: {}", file_name, e);
+                None // Continue without embedding
+            }
+        };
+
+        // Index with metadata and embedding (tags and text are NOT stored, only used for embedding)
+        // ID is based on file hash + updated_at, so same content at different times = different documents
+        indexer.index_semantic_file(
+            file_meta,
+            &tags, // Passed but not stored - used only for embedding generation
+            text.as_deref(), // Passed but not stored - used only for embedding generation
+            file_metadata.as_ref(),
+            embedding.as_deref(),
+        ).await?;
+        count += 1;
+        
+        if is_protected {
+            protected_count += 1;
+        } else {
+            pb.inc(1);
+        }
+    }
+
+    pb.finish_with_message("Indexing complete!");
+    println!("\n✓ Indexed {} files total", count);
+    if embedding_count > 0 {
+        println!("  ✓ Generated embeddings for {} files", embedding_count);
+    }
+    if embedding_failures > 0 {
+        println!("  ⚠️  Failed to generate embeddings for {} files (will continue without embeddings)", embedding_failures);
+    }
+    if use_llm {
+        if llm_tag_count > 0 {
+            println!("  ✓ Generated LLM tags for {} files", llm_tag_count);
+        }
+        if llm_tag_failures > 0 {
+            println!("  ⚠️  LLM tag generation failed for {} files (fell back to dictionary)", llm_tag_failures);
+        }
+    }
+    if protected_count > 0 {
+        println!("  ℹ️  {} file(s) in protected structures were indexed but not moved", protected_count);
+    }
+
+    Ok(())
+}
+

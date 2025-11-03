@@ -17,12 +17,14 @@ Cognifs is an AI-powered, auto-organizing file system. It scans directories, ext
 
 - **Scanner** — Recursively read files, collect metadata (size, extension, created_at, hash)
 - **Watcher** — Monitor directories for file changes (safe, only watches specified paths)
-- **Tagger System** — Modular, trait-based per file type:
+- **SemanticSource System** — Modular, trait-based per file type:
+  - Text extraction from various file types (txt, md, pdf, csv, zip)
   - Dictionary + LLM tagging
-  - Handlers per extension (txt, md, etc.)
+  - Metadata extraction (PDF metadata, CSV headers, etc.)
   - Custom logic for different file types
 - **Embeddings** — Compute semantic vectors via Ollama (nomic-embed-text, mxbai-embed-large) for clustering + search
 - **Indexing** — Store metadata + embeddings in Meilisearch (vector search enabled)
+- **Incremental Sync** — Smart synchronization that updates existing documents without losing data
 - **Search** — Query Meilisearch with semantic + tag filters
 - **Organizer** — Auto-create folder names from dominant tags, preview changes, safely reorganize files
 - **CLI** — Complete command-line interface for all operations
@@ -31,7 +33,8 @@ Cognifs is an AI-powered, auto-organizing file system. It scans directories, ext
 
 Cognifs is built with a **trait-based architecture** for maximum extensibility:
 
-- **Trait-based components**: LLM providers, embedding providers, indexers, and taggers all use traits
+- **Trait-based components**: LLM providers, embedding providers, indexers, and file handlers all use traits
+- **SemanticSource**: Unified interface for extracting text, metadata, and generating tags from files
 - **Local-first**: Works with local LLMs (guff) and local Ollama instance
 - **Extensible**: Easy to add new file type handlers, LLM providers, or search backends
 - **Safe**: Only operates on explicitly provided directory paths (never entire filesystem)
@@ -56,38 +59,71 @@ cargo build --release
 
 ## 🚦 Usage
 
+Cognifs provides multiple binary executables for different operations. Each command is available as a separate binary:
+
+- `cognifs-watch` - Monitor directories for file changes
+- `cognifs-tag` - Tag individual files
+- `cognifs-index` - Index files to Meilisearch
+- `cognifs-search` - Search indexed files
+- `cognifs-organize` - Organize files into folders
+
+You can also use the main `cognifs` binary which dispatches to the appropriate command.
+
 ### Watch a Directory
 
 Monitor a directory for file changes:
 
 ```bash
-cognifs watch ~/Documents/cognifs/
+cognifs-watch ~/Documents/
 ```
+
+With auto-indexing enabled, files are automatically indexed when they change:
+
+```bash
+cognifs-watch ~/Documents/ --auto-index
+```
+
+This will:
+- **Index** new files when they are created
+- **Update** the index when files are modified
+- **Remove** files from the index when they are deleted
 
 ### Tag a Single File
 
 Tag a file and see extracted tags:
 
 ```bash
-cognifs tag ~/Documents/notes.txt
+cognifs-tag ~/Documents/notes.txt
+```
+
+Save tags to Meilisearch index:
+
+```bash
+cognifs-tag ~/Documents/notes.txt --save
 ```
 
 ### Index Files to Meilisearch
 
-Index all files in a directory:
+Index all files in a directory with incremental sync (updates existing documents, removes deleted files):
 
 ```bash
-cognifs index ~/Documents/ \
+cognifs-index ~/Documents/ \
   --meili-url http://127.0.0.1:7700 \
   --index-name my-files
 ```
+
+The index command automatically:
+- **Synchronizes** the index with the filesystem (detects changes, removes deleted files)
+- **Updates** existing documents when file content changes
+- **Preserves** all existing data when reindexing
+- Shows sync statistics (unchanged/updated/deleted files)
 
 ### Search Files
 
 Search indexed files:
 
 ```bash
-cognifs search "meeting notes" \
+cognifs-search "meeting notes" \
   --meili-url http://127.0.0.1:7700 \
   --index-name my-files
 ```
@@ -97,28 +133,36 @@ cognifs search "meeting notes" \
 Automatically organize files into folders based on tags (with preview):
 
 ```bash
-cognifs organize ~/Documents/
+cognifs-organize ~/Documents/
 ```
 
 Use `--dry-run` to preview without making changes:
 
 ```bash
-cognifs organize ~/Documents/ --dry-run
+cognifs-organize ~/Documents/ --dry-run
 ```
 
 Skip confirmation with `--yes` (use with caution):
 
 ```bash
-cognifs organize ~/Documents/ --yes
+cognifs-organize ~/Documents/ --yes
 ```
 
 Enable intelligent LLM-powered tag generation (requires LLM configured in `settings.toml`):
 
 ```bash
-cognifs organize ~/Documents/ --use-llm
+cognifs-organize ~/Documents/ --use-llm
+```
+
+Index files after organizing:
+
+```bash
+cognifs-organize ~/Documents/ --index
 ```
 
 The `--use-llm` flag enhances tag generation by using your local LLM (guff/llama.cpp) to understand file content semantically. If the LLM is not available, it falls back to dictionary-based tagging.
+
+The `--index` flag will index all organized files to Meilisearch after the reorganization is complete, using the tags and embeddings already computed during the organization process.
 
 **Protected Structures**: Cognifs automatically detects and skips files inside protected directory structures to preserve their organization. These include:
 
@@ -146,6 +190,7 @@ index_name = "cognifs"
 [ollama]
 url = "http://127.0.0.1:11434"
 model = "nomic-embed-text"  # or "mxbai-embed-large"
+dims = 768  # Embedding dimension (768 for nomic-embed-text, 1024 for mxbai-embed-large)
 
 [llm]
 provider = "local"
@@ -347,14 +392,26 @@ model = "mxbai-embed-large"  # Change this to use a different model
 ```
 cognifs/
 ├── src/
-│   ├── main.rs          # CLI entry point
+│   ├── bin/                    # CLI binary executables
+│   │   ├── cognifs.rs         # Main dispatcher binary
+│   │   ├── cognifs-watch.rs   # Watch command binary
+│   │   ├── cognifs-tag.rs     # Tag command binary
+│   │   ├── cognifs-index.rs   # Index command binary
+│   │   ├── cognifs-search.rs  # Search command binary
+│   │   └── cognifs-organize.rs # Organize command binary
 │   ├── lib.rs           # Library exports
 │   ├── models.rs        # FileMeta struct
 │   ├── watcher.rs       # Filesystem watcher
-│   ├── tagger/          # File type handlers
-│   │   ├── trait.rs     # Taggable trait
-│   │   ├── text/        # Text handlers (txt, md)
-│   │   └── registry.rs  # Handler registry
+│   ├── file/            # File type handlers (SemanticSource)
+│   │   ├── trait.rs     # SemanticSource trait
+│   │   ├── factory.rs   # File factory
+│   │   └── types/       # Type-specific handlers
+│   │       ├── txt.rs   # Text files
+│   │       ├── md.rs    # Markdown files
+│   │       ├── pdf.rs   # PDF files
+│   │       ├── csv.rs   # CSV files
+│   │       ├── zip.rs   # ZIP archives
+│   │       └── generic.rs # Generic fallback
 │   ├── llm/             # LLM providers
 │   │   ├── trait.rs     # LlmProvider trait
 │   │   └── local.rs     # Local guff implementation
@@ -364,12 +421,20 @@ cognifs/
 │   ├── indexer/         # Search backends
 │   │   ├── trait.rs     # Indexer trait
 │   │   └── meili.rs     # Meilisearch implementation
-│   └── organizer/       # File organization
-│       ├── generator.rs # Folder name generation
-│       ├── mover.rs     # File reorganization
-│       └── preview.rs   # Tree preview
+│   ├── organizer/       # File organization
+│   │   ├── generator.rs # Folder name generation
+│   │   ├── mover.rs     # File reorganization
+│   │   ├── preview.rs   # Tree preview
+│   │   ├── cluster.rs   # Semantic clustering
+│   │   └── context.rs   # Path-based tag extraction
+│   ├── utils.rs         # Utility functions
+│   ├── constants.rs     # Constants (protected patterns, extensions)
+│   └── config.rs        # Configuration management
 ├── config/
-│   └── llm.yaml         # LLM configuration
+│   └── settings.toml    # Configuration file
+├── scripts/
+│   ├── download-model.sh # Download GGUF model script
+│   └── init-ollama-container.sh # Initialize Ollama
 └── Cargo.toml
 ```
 
@@ -389,9 +454,10 @@ cargo build --release
 
 ### Code Structure
 
-- **Traits** define interfaces for extensibility (LlmProvider, EmbeddingProvider, Indexer, Taggable)
-- **Implementations** live in separate modules (e.g., `llm/local.rs`, `embeddings/local.rs`)
-- **Registry pattern** used for taggers to select handlers by file extension
+- **Traits** define interfaces for extensibility (LlmProvider, EmbeddingProvider, Indexer, SemanticSource)
+- **Implementations** live in separate modules (e.g., `llm/local.rs`, `embeddings/local.rs`, `file/types/`)
+- **Factory pattern** used for file handlers to select handlers by file extension
+- **Modular CLI** with each command in its own module (`src/bin/`)
 - **All I/O is async** using Tokio
 
 ## 🧠 Design Principles
@@ -404,8 +470,12 @@ cargo build --release
 
 ## 🚧 Roadmap
 
-- [ ] Additional file type handlers (PDF, images, video, audio)
-- [ ] Clustering algorithm for grouping similar files
+- [x] PDF file handler with native Rust libraries
+- [x] CSV file handler
+- [x] ZIP archive handler
+- [x] Semantic clustering for file organization
+- [x] Incremental sync for Meilisearch index
+- [ ] Additional file type handlers (images, video, audio)
 - [ ] HTTP LLM providers (OpenAI, Mistral)
 - [ ] Alternative indexers (Qdrant, local JSON)
 - [ ] Feedback learning system
