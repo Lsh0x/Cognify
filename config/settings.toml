@@ -7,7 +7,7 @@
 url = "http://127.0.0.1:7700"
 # Optional API key (can also be set via MEILI_MASTER_KEY env var)
 # Leave empty for development (matches docker-compose default)
-api_key = "DEqtxT7zLKqHuxnF0-LC4pxWzkj8Zb_8w9epacw2f5o"
+api_key = "I7oI6V0I3j0TdPEgtW_-wSj-9xPhPmT-XokgZoXDwiI"
 # Default index name
 index_name = "cognifs"
 

@@ -4,7 +4,7 @@ use cognifs::{
     config::Config,
     embeddings::{EmbeddingProvider, LocalEmbeddingProvider},
     file::FileFactory,
-    indexer::{Indexer, MeilisearchIndexer},
+    indexer::{Indexer, MeilisearchIndexer, SyncStats},
     llm::{LlmProvider, LocalLlmProvider},
     models::FileMeta,
     organizer::{FileMover, FolderGenerator, PreviewTree},
@@ -203,15 +203,69 @@ async fn main() -> Result<()> {
             println!("📊 Generating embeddings with model: {} ({} dimensions)", 
                      embedding_model, embedding_provider.dimension());
 
-            // Count files for progress bar
-            let total_files: usize = walkdir::WalkDir::new(&dir)
-                .into_iter()
-                .filter_map(|e| e.ok())
-                .filter(|e| e.path().is_file() && !utils::is_inside_protected_structure_with_base(e.path(), Some(&dir)))
-                .count();
-
-            if total_files == 0 {
+            // First, collect all files and their metadata for sync
+            println!("📂 Scanning directory for changes...");
+            let mut all_files: Vec<FileMeta> = Vec::new();
+            
+            for entry in walkdir::WalkDir::new(&dir) {
+                let entry = entry?;
+                let path = entry.path();
+                
+                if !path.is_file() {
+                    continue;
+                }
+                
+                // Get metadata for all files (including protected ones for sync)
+                let metadata = std::fs::metadata(path)?;
+                let extension = utils::get_extension(path);
+                let hash = utils::compute_file_hash(path)?;
+                let created_at = metadata
+                    .created()
+                    .or_else(|_| metadata.modified())
+                    .unwrap_or_else(|_| std::time::SystemTime::now());
+                let updated_at = metadata
+                    .modified()
+                    .or_else(|_| metadata.created())
+                    .unwrap_or_else(|_| std::time::SystemTime::now());
+                
+                let file_meta = FileMeta::new(
+                    path.to_path_buf(),
+                    metadata.len(),
+                    extension,
+                    created_at,
+                    updated_at,
+                    hash,
+                );
+                
+                all_files.push(file_meta);
+            }
+            
+            if all_files.is_empty() {
                 println!("No files found to index.");
+                return Ok(());
+            }
+            
+            // Sync index: remove deleted files, detect changes
+            println!("🔄 Synchronizing index...");
+            let file_refs: Vec<&FileMeta> = all_files.iter().collect();
+            let sync_stats = indexer.sync_index(&file_refs).await?;
+            
+            println!("Sync results:");
+            println!("  ✓ {} files unchanged", sync_stats.unchanged);
+            if sync_stats.updated > 0 {
+                println!("  ↻ {} files will be updated (content changed)", sync_stats.updated);
+            }
+            if sync_stats.deleted > 0 {
+                println!("  ✗ {} files removed from index (no longer exist)", sync_stats.deleted);
+            }
+            
+            // Count files for progress bar (excluding protected for indexing count)
+            let total_files: usize = all_files.iter()
+                .filter(|f| !utils::is_inside_protected_structure_with_base(&f.path, Some(&dir)))
+                .count();
+            
+            if total_files == 0 {
+                println!("No files to index (all files are in protected structures).");
                 return Ok(());
             }
 
@@ -229,14 +283,8 @@ async fn main() -> Result<()> {
             let mut embedding_failures = 0;
             let mut protected_count = 0;
             
-            for entry in walkdir::WalkDir::new(&dir) {
-                let entry = entry?;
-                let path = entry.path();
-
-                if !path.is_file() {
-                    continue;
-                }
-
+            for file_meta in all_files.iter() {
+                let path = &file_meta.path;
                 let is_protected = utils::is_inside_protected_structure_with_base(path, Some(&dir));
                 
                 let file_name = path.file_name()
@@ -244,33 +292,13 @@ async fn main() -> Result<()> {
                     .unwrap_or("unknown");
                 
                 if is_protected {
-                    pb.set_message(format!("Indexing (protected): {}", file_name));
+                    // Protected files are still indexed but not counted in progress
+                    // Skip progress bar for protected files
                 } else {
                     pb.set_message(format!("Indexing: {}", file_name));
                 }
 
-                // Get metadata
-                let metadata = std::fs::metadata(path)?;
-                let extension = utils::get_extension(path);
-                let extension_str = extension.as_ref().map(|s| s.as_str()).unwrap_or("unknown");
-                let hash = utils::compute_file_hash(path)?;
-                let created_at = metadata
-                    .created()
-                    .or_else(|_| metadata.modified())
-                    .unwrap_or_else(|_| std::time::SystemTime::now());
-                let updated_at = metadata
-                    .modified()
-                    .or_else(|_| metadata.created())
-                    .unwrap_or_else(|_| std::time::SystemTime::now());
-
-                let file_meta = FileMeta::new(
-                    path.to_path_buf(),
-                    metadata.len(),
-                    extension.clone(),
-                    created_at,
-                    updated_at,
-                    hash,
-                );
+                let extension_str = file_meta.extension.as_ref().map(|s| s.as_str()).unwrap_or("unknown");
 
                 // Create SemanticFile via factory
                 let semantic_source = FileFactory::create_from_meta(&file_meta);
@@ -352,8 +380,9 @@ async fn main() -> Result<()> {
                 };
 
                 // Index with text, metadata, and embedding (even for protected files)
+                // Meilisearch will automatically update if document with same ID exists
                 indexer.index_semantic_file(
-                    &file_meta,
+                    file_meta,
                     &tags,
                     text.as_deref(),
                     file_metadata.as_ref(),
@@ -363,9 +392,9 @@ async fn main() -> Result<()> {
                 
                 if is_protected {
                     protected_count += 1;
+                } else {
+                    pb.inc(1);
                 }
-
-                pb.inc(1);
             }
 
             pb.finish_with_message("Indexing complete!");
