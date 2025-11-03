@@ -140,12 +140,13 @@ executable = "guff"
 
 ### LLM Configuration
 
-Additional LLM settings are in `config/llm.yaml`:
+LLM settings are configured in `config/settings.toml`:
 
-```yaml
-provider: local
-model_path: ~/.local/share/models/guff/model.bin
-executable: guff
+```toml
+[llm]
+provider = "local"
+model_path = "~/.local/share/models/guff/model.bin"
+executable = "guff"
 ```
 
 #### Getting GGUF Model Files

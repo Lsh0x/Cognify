@@ -19,9 +19,11 @@ url = "http://127.0.0.1:11434"
 model = "nomic-embed-text"
 
 [llm]
-# LLM settings (see also config/llm.yaml for detailed LLM configuration)
+# LLM settings for intelligent tag generation
 provider = "local"
+# Path to GGUF model file (supports ~ expansion)
 model_path = "~/.local/share/models/guff/model.bin"
+# Executable name for local LLM (guff, llama.cpp, etc.)
 executable = "guff"
 
 [organizer]
