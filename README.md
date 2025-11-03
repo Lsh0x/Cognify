@@ -148,6 +148,43 @@ model_path: ~/.local/share/models/guff/model.bin
 executable: guff
 ```
 
+#### Getting GGUF Model Files
+
+Cognifs uses local LLM models in GGUF format. Here's how to get them:
+
+**Option 1: Using Hugging Face**
+
+1. Visit [Hugging Face Models](https://huggingface.co/models?library=gguf)
+2. Search for a compatible model (e.g., "llama", "mistral", "phi")
+3. Download a GGUF file (look for `*.gguf` files, Q4_K_M or Q5_K_M are good quality/size balance)
+4. Save it to your model directory:
+
+```bash
+mkdir -p ~/.local/share/models/guff/
+# Move your downloaded .gguf file to this location
+mv ~/Downloads/model.gguf ~/.local/share/models/guff/model.bin
+```
+
+**Option 2: Using Ollama (Alternative)**
+
+You can also use Ollama's models for LLM tagging (if you add HTTP provider support):
+
+```bash
+# Pull a model via Ollama
+docker exec cognifs-ollama ollama pull llama3.2:1b
+```
+
+**Option 3: Pre-converted Models**
+
+Popular sources for pre-converted GGUF models:
+- [TheBloke's Hugging Face](https://huggingface.co/TheBloke) - Many models in GGUF format
+- [llama.cpp releases](https://github.com/ggerganov/llama.cpp/releases) - Official conversions
+
+**Recommended Models for Tagging:**
+- `llama-3.2-1b` - Fast, efficient for tagging
+- `mistral-7b-instruct` - Good balance of quality and speed
+- `phi-2` - Small, fast, Microsoft's model
+
 ### Embeddings
 
 Embeddings use Ollama by default (http://127.0.0.1:11434). Supported models:
@@ -201,9 +238,14 @@ Or use [Meilisearch Cloud](https://www.meilisearch.com/cloud).
 Install Ollama following the [official instructions](https://ollama.ai), then pull the embedding models:
 
 ```bash
+# Using local Ollama installation
 ollama pull nomic-embed-text
 # or for larger model
 ollama pull mxbai-embed-large
+
+# Or using docker-compose
+docker exec cognifs-ollama ollama pull nomic-embed-text
+docker exec cognifs-ollama ollama pull mxbai-embed-large
 ```
 
 ## 🧱 Project Structure
