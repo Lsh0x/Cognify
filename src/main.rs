@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use cognifs::{
+    config::Config,
     embeddings::{EmbeddingProvider, LocalEmbeddingProvider},
     indexer::{Indexer, MeilisearchIndexer},
-    llm::LocalLlmProvider,
     models::FileMeta,
     organizer::{FileMover, FolderGenerator, PreviewTree},
     tagger::TaggerRegistry,
@@ -40,30 +40,30 @@ enum Commands {
         /// Directory to index
         #[arg(value_name = "DIR")]
         dir: PathBuf,
-        /// Meilisearch URL
-        #[arg(long, default_value = "http://127.0.0.1:7700")]
-        meili_url: String,
-        /// Meilisearch API key (optional)
+        /// Meilisearch URL (overrides config)
+        #[arg(long)]
+        meili_url: Option<String>,
+        /// Meilisearch API key (overrides config and env)
         #[arg(long)]
         meili_key: Option<String>,
-        /// Meilisearch index name
-        #[arg(long, default_value = "cognifs")]
-        index_name: String,
+        /// Meilisearch index name (overrides config)
+        #[arg(long)]
+        index_name: Option<String>,
     },
     /// Search for files using Meilisearch
     Search {
         /// Search query
         #[arg(value_name = "QUERY")]
         query: String,
-        /// Meilisearch URL
-        #[arg(long, default_value = "http://127.0.0.1:7700")]
-        meili_url: String,
-        /// Meilisearch API key (optional)
+        /// Meilisearch URL (overrides config)
+        #[arg(long)]
+        meili_url: Option<String>,
+        /// Meilisearch API key (overrides config and env)
         #[arg(long)]
         meili_key: Option<String>,
-        /// Meilisearch index name
-        #[arg(long, default_value = "cognifs")]
-        index_name: String,
+        /// Meilisearch index name (overrides config)
+        #[arg(long)]
+        index_name: Option<String>,
     },
     /// Organize files into folders based on tags
     Organize {
@@ -82,6 +82,9 @@ enum Commands {
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
+    
+    // Load configuration (falls back to defaults if not found)
+    let config = Config::load().unwrap_or_default();
 
     match cli.command {
         Commands::Watch { dir } => {
@@ -146,7 +149,9 @@ async fn main() -> Result<()> {
             println!("Tags: {:?}", tags);
 
             // Optionally compute embedding
-            let embedding_provider = LocalEmbeddingProvider::new(None, None);
+            let ollama_url = config.ollama.url.as_str();
+            let embedding_model = config.ollama.model.as_str();
+            let embedding_provider = LocalEmbeddingProvider::new(Some(ollama_url), Some(embedding_model));
             match embedding_provider.compute_embedding(&content).await {
                 Ok(embedding) => {
                     println!("Embedding computed: {} dimensions", embedding.len());
@@ -158,6 +163,10 @@ async fn main() -> Result<()> {
         }
         Commands::Index { dir, meili_url, meili_key, index_name } => {
             println!("Indexing directory: {}", dir.display());
+            
+            let meili_url = meili_url.unwrap_or_else(|| config.meilisearch.url.clone());
+            let meili_key = meili_key.or_else(|| config.meilisearch_api_key());
+            let index_name = index_name.unwrap_or_else(|| config.meilisearch.index_name.clone());
             
             let indexer = MeilisearchIndexer::new(
                 &meili_url,
@@ -219,6 +228,10 @@ async fn main() -> Result<()> {
         }
         Commands::Search { query, meili_url, meili_key, index_name } => {
             println!("Searching for: {}", query);
+            
+            let meili_url = meili_url.unwrap_or_else(|| config.meilisearch.url.clone());
+            let meili_key = meili_key.or_else(|| config.meilisearch_api_key());
+            let index_name = index_name.unwrap_or_else(|| config.meilisearch.index_name.clone());
             
             let indexer = MeilisearchIndexer::new(
                 &meili_url,

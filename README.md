@@ -114,9 +114,33 @@ cognifs organize ~/Documents/ --yes
 
 ## ⚙️ Configuration
 
+Cognifs uses a TOML configuration file (`config/settings.toml`) for default settings. All settings can be overridden via command-line flags.
+
+### Configuration File
+
+Edit `config/settings.toml` to customize defaults:
+
+```toml
+[meilisearch]
+url = "http://127.0.0.1:7700"
+# api_key = ""  # Optional, can also use MEILI_MASTER_KEY env var
+index_name = "cognifs"
+
+[ollama]
+url = "http://127.0.0.1:11434"
+model = "nomic-embed-text"  # or "mxbai-embed-large"
+
+[llm]
+provider = "local"
+model_path = "~/.local/share/models/guff/model.bin"
+executable = "guff"
+```
+
+**Note**: The default settings match the docker-compose.yml services. You can override any setting via CLI flags.
+
 ### LLM Configuration
 
-Edit `config/llm.yaml`:
+Additional LLM settings are in `config/llm.yaml`:
 
 ```yaml
 provider: local
@@ -129,6 +153,18 @@ executable: guff
 Embeddings use Ollama by default (http://127.0.0.1:11434). Supported models:
 - `nomic-embed-text` (768 dimensions) - default
 - `mxbai-embed-large` (1024 dimensions)
+
+### Overriding Configuration
+
+All settings can be overridden via command-line flags:
+
+```bash
+# Use different Meilisearch URL
+cognifs index ~/Documents/ --meili-url http://localhost:7701
+
+# Use different embedding model
+cognifs tag file.txt --embedding-model mxbai-embed-large
+```
 
 ### Using Docker Compose
 

@@ -1,0 +1,33 @@
+# Cognifs Configuration File
+# This file configures the default settings for Cognifs
+# These defaults match the docker-compose.yml services
+
+[meilisearch]
+# Meilisearch connection settings (matches docker-compose service)
+url = "http://127.0.0.1:7700"
+# Optional API key (can also be set via MEILI_MASTER_KEY env var)
+# Leave empty for development (matches docker-compose default)
+# api_key = ""
+# Default index name
+index_name = "cognifs"
+
+[ollama]
+# Ollama connection settings (matches docker-compose service)
+url = "http://127.0.0.1:11434"
+# Default embedding model
+# Options: "nomic-embed-text" (768 dims) or "mxbai-embed-large" (1024 dims)
+model = "nomic-embed-text"
+
+[llm]
+# LLM settings (see also config/llm.yaml for detailed LLM configuration)
+provider = "local"
+model_path = "~/.local/share/models/guff/model.bin"
+executable = "guff"
+
+[organizer]
+# File organization settings
+# Skip confirmation by default (use --yes flag to override)
+skip_confirmation = false
+# Default to dry-run (use --no-dry-run to override)
+dry_run_default = false
+
