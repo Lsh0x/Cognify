@@ -4,5 +4,4 @@
 *.swo
 *~
 .DS_Store
-meili_data/
-ollama_data/
+data/
