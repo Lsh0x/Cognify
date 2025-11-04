@@ -27,6 +27,9 @@ dims = 4096
 [ollama]
 # Ollama connection settings (alternative to TEI)
 url = "http://127.0.0.1:11434"
+# Multiple Ollama servers for load balancing (optional)
+# If specified, will use round-robin distribution with automatic failover
+# urls = ["http://127.0.0.1:11434", "http://127.0.0.1:11435", "http://192.168.1.100:11434"]
 # Default embedding model
 # Options: "nomic-embed-text" (768 dims) or "mxbai-embed-large" (1024 dims)
 model = "mxbai-embed-large"

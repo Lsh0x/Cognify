@@ -6,7 +6,7 @@ use cognifs::{
         ARCHIVE_EXTENSIONS, AUDIO_EXTENSIONS, DOCUMENT_EXTENSIONS,
         IMAGE_EXTENSIONS, SPREADSHEET_EXTENSIONS, VIDEO_EXTENSIONS,
     },
-    embeddings::{EmbeddingProvider, LocalEmbeddingProvider, TeiEmbeddingProvider},
+    embeddings::{EmbeddingProvider, LocalEmbeddingProvider, MultiOllamaEmbeddingProvider, TeiEmbeddingProvider},
     file::FileFactory,
     indexer::{Indexer, MeilisearchIndexer},
     llm::{LlmProvider, LocalLlmProvider},
@@ -176,16 +176,39 @@ async fn main() -> Result<()> {
             Some(config.tei.dims),
         ))
     } else {
-        let ollama_url = config.ollama.url.as_str();
         let embedding_model = config.ollama.model.as_str();
         let embedding_dims = config.ollama.dims;
-        println!("📊 Using Ollama embeddings for semantic clustering (model: {}, {} dimensions)", 
-                 embedding_model, embedding_dims);
-        Box::new(LocalEmbeddingProvider::new(
-            Some(ollama_url),
-            Some(embedding_model),
-            Some(embedding_dims),
-        ))
+        
+        // Use multi-Ollama if multiple URLs are configured, otherwise single Ollama
+        if let Some(ref urls) = config.ollama.urls {
+            if !urls.is_empty() {
+                println!("📊 Using multiple Ollama servers ({} servers) for semantic clustering", urls.len());
+                println!("  Model: {} ({} dimensions)", embedding_model, embedding_dims);
+                Box::new(MultiOllamaEmbeddingProvider::new(
+                    urls.clone(),
+                    Some(embedding_model),
+                    Some(embedding_dims),
+                ))
+            } else {
+                let ollama_url = config.ollama.url.as_str();
+                println!("📊 Using Ollama embeddings for semantic clustering (model: {}, {} dimensions)", 
+                         embedding_model, embedding_dims);
+                Box::new(LocalEmbeddingProvider::new(
+                    Some(ollama_url),
+                    Some(embedding_model),
+                    Some(embedding_dims),
+                ))
+            }
+        } else {
+            let ollama_url = config.ollama.url.as_str();
+            println!("📊 Using Ollama embeddings for semantic clustering (model: {}, {} dimensions)", 
+                     embedding_model, embedding_dims);
+            Box::new(LocalEmbeddingProvider::new(
+                Some(ollama_url),
+                Some(embedding_model),
+                Some(embedding_dims),
+            ))
+        }
     };
     
     println!("  ✓ Embedding dimension: {}", embedding_provider.dimension());

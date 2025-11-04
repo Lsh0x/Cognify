@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use cognifs::{
     config::Config,
-    embeddings::{EmbeddingProvider, LocalEmbeddingProvider, TeiEmbeddingProvider},
+    embeddings::{EmbeddingProvider, LocalEmbeddingProvider, MultiOllamaEmbeddingProvider, TeiEmbeddingProvider},
     file::FileFactory,
     indexer::MeilisearchIndexer,
     models::FileMeta,
@@ -178,14 +178,33 @@ async fn main() -> Result<()> {
                 Some(config.tei.dims),
             ))
         } else {
-            let ollama_url = config.ollama.url.as_str();
             let embedding_model = config.ollama.model.as_str();
             let embedding_dims = config.ollama.dims;
-            Box::new(LocalEmbeddingProvider::new(
-                Some(ollama_url),
-                Some(embedding_model),
-                Some(embedding_dims),
-            ))
+            
+            // Use multi-Ollama if multiple URLs are configured, otherwise single Ollama
+            if let Some(ref urls) = config.ollama.urls {
+                if !urls.is_empty() {
+                    Box::new(MultiOllamaEmbeddingProvider::new(
+                        urls.clone(),
+                        Some(embedding_model),
+                        Some(embedding_dims),
+                    ))
+                } else {
+                    let ollama_url = config.ollama.url.as_str();
+                    Box::new(LocalEmbeddingProvider::new(
+                        Some(ollama_url),
+                        Some(embedding_model),
+                        Some(embedding_dims),
+                    ))
+                }
+            } else {
+                let ollama_url = config.ollama.url.as_str();
+                Box::new(LocalEmbeddingProvider::new(
+                    Some(ollama_url),
+                    Some(embedding_model),
+                    Some(embedding_dims),
+                ))
+            }
         };
         
         println!("✓ Auto-indexing enabled - files will be indexed when they change");

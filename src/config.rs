@@ -31,6 +31,9 @@ pub struct MeilisearchConfig {
 pub struct OllamaConfig {
     #[serde(default = "default_ollama_url")]
     pub url: String,
+    /// Multiple Ollama server URLs for load balancing (optional, falls back to `url` if not provided)
+    #[serde(default)]
+    pub urls: Option<Vec<String>>,
     #[serde(default = "default_ollama_model")]
     pub model: String,
     #[serde(default = "default_embedding_dims")]
@@ -133,6 +136,7 @@ impl Default for Config {
             },
             ollama: OllamaConfig {
                 url: "http://127.0.0.1:11434".to_string(),
+                urls: None,
                 model: "nomic-embed-text".to_string(),
                 dims: 768,
             },
@@ -158,6 +162,7 @@ impl Default for OllamaConfig {
     fn default() -> Self {
         Self {
             url: default_ollama_url(),
+            urls: None,
             model: default_ollama_model(),
             dims: default_embedding_dims(),
         }

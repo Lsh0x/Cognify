@@ -12,7 +12,7 @@ pub struct LocalEmbeddingProvider {
 
 impl LocalEmbeddingProvider {
     /// Determine embedding dimension from model name
-    pub(crate) fn get_dimension_for_model(model: &str) -> usize {
+    pub fn get_dimension_for_model(model: &str) -> usize {
         // Known model dimensions
         match model {
             m if m.contains("mxbai-embed-large") => 1024,

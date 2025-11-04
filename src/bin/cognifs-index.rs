@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use cognifs::{
     config::Config,
-    embeddings::{EmbeddingProvider, LocalEmbeddingProvider, TeiEmbeddingProvider},
+    embeddings::{EmbeddingProvider, LocalEmbeddingProvider, MultiOllamaEmbeddingProvider, TeiEmbeddingProvider},
     file::FileFactory,
     indexer::MeilisearchIndexer,
     llm::{LlmProvider, LocalLlmProvider},
@@ -83,16 +83,42 @@ async fn main() -> Result<()> {
             Some(config.tei.dims),
         ))
     } else {
-        let ollama_url = config.ollama.url.as_str();
         let embedding_model = config.ollama.model.as_str();
         let embedding_dims = config.ollama.dims;
-        println!("📊 Generating embeddings with Ollama model: {} ({} dimensions)", 
-                 embedding_model, embedding_dims);
-        Box::new(LocalEmbeddingProvider::new(
-            Some(ollama_url),
-            Some(embedding_model),
-            Some(embedding_dims),
-        ))
+        
+        // Use multi-Ollama if multiple URLs are configured, otherwise single Ollama
+        if let Some(ref urls) = config.ollama.urls {
+            if !urls.is_empty() {
+                println!("📊 Using multiple Ollama servers ({} servers) for embeddings", urls.len());
+                println!("  Model: {} ({} dimensions)", embedding_model, embedding_dims);
+                println!("  Servers: {}", urls.join(", "));
+                Box::new(MultiOllamaEmbeddingProvider::new(
+                    urls.clone(),
+                    Some(embedding_model),
+                    Some(embedding_dims),
+                ))
+            } else {
+                // Fallback to single server if urls is empty
+                let ollama_url = config.ollama.url.as_str();
+                println!("📊 Generating embeddings with Ollama model: {} ({} dimensions)", 
+                         embedding_model, embedding_dims);
+                Box::new(LocalEmbeddingProvider::new(
+                    Some(ollama_url),
+                    Some(embedding_model),
+                    Some(embedding_dims),
+                ))
+            }
+        } else {
+            // Single Ollama server
+            let ollama_url = config.ollama.url.as_str();
+            println!("📊 Generating embeddings with Ollama model: {} ({} dimensions)", 
+                     embedding_model, embedding_dims);
+            Box::new(LocalEmbeddingProvider::new(
+                Some(ollama_url),
+                Some(embedding_model),
+                Some(embedding_dims),
+            ))
+        }
     };
     
     println!("  ✓ Embedding dimension: {}", embedding_provider.dimension());
