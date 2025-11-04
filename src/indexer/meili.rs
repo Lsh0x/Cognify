@@ -13,7 +13,8 @@ pub struct Document {
     file_hash: String, // Blake3 hash of file content for change detection
     size: u64,
     extension: Option<String>,
-    // tags and text removed - not stored in Meilisearch
+    tags: Vec<String>, // Tags for searchability
+    // text removed - not stored in Meilisearch (only used for embedding generation)
     #[serde(skip_serializing_if = "Option::is_none")]
     metadata: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -84,6 +85,9 @@ impl MeilisearchIndexer {
         // Configure searchable attributes (tags and path are searchable)
         // Note: Settings can also be configured via Meilisearch dashboard
         // For vector search with embeddings, Meilisearch v1.5+ supports vector fields
+        // Configure attributes for searching
+        let _ = index.set_searchable_attributes(&["path", "tags"]).await;
+        let _ = index.set_filterable_attributes(&["tags", "extension", "size"]).await;
         
         Ok(Self { client, index })
     }
@@ -167,13 +171,13 @@ impl MeilisearchIndexer {
         Ok(to_delete.len())
     }
 
-    /// Index a semantic file with metadata and embedding (no tags, no text stored)
+    /// Index a semantic file with metadata, tags, and embedding
     /// ID is based on file hash + updated_at, allowing multiple versions of same content
     pub async fn index_semantic_file(
         &self,
         file: &FileMeta,
-        tags: &[String], // Not stored, but used for embedding generation
-        text: Option<&str>, // Not stored, but used for embedding generation
+        tags: &[String], // Stored for searchability
+        text: Option<&str>, // Not stored, only used for embedding generation
         metadata: Option<&serde_json::Value>,
         embedding: Option<&[f32]>,
     ) -> Result<()> {
@@ -186,7 +190,8 @@ impl MeilisearchIndexer {
             file_hash: file.hash.clone(), // Store file hash for change detection
             size: file.size,
             extension: file.extension.clone(),
-            // tags and text are NOT stored in Meilisearch
+            tags: tags.to_vec(), // Store tags for searchability
+            // text is NOT stored in Meilisearch (only used for embedding generation)
             metadata: metadata.cloned(),
             embedding: embedding.map(|e| e.to_vec()),
         };

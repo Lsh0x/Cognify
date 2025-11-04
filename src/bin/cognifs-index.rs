@@ -4,13 +4,12 @@ use cognifs::{
     config::Config,
     embeddings::{EmbeddingProvider, LocalEmbeddingProvider},
     file::FileFactory,
-    indexer::MeilisearchIndexer,
+    indexer::{MeilisearchIndexer, SyncStats},
     llm::{LlmProvider, LocalLlmProvider},
     models::FileMeta,
     utils,
 };
 use indicatif::{ProgressBar, ProgressStyle};
-use shellexpand;
 use std::path::PathBuf;
 use walkdir::WalkDir;
 
@@ -34,6 +33,10 @@ struct Cli {
     /// Meilisearch index name (overrides config)
     #[arg(long)]
     index_name: Option<String>,
+    
+    /// Enable LLM-based tag generation (very slow: ~30s per file)
+    #[arg(long)]
+    use_llm: bool,
 }
 
 #[tokio::main]
@@ -55,15 +58,21 @@ async fn main() -> Result<()> {
     .await
     .context("Failed to create Meilisearch indexer")?;
 
-    // Initialize LLM provider for tag generation
+    // Initialize LLM provider for tag generation (disabled by default due to performance)
     let llm_provider = LocalLlmProvider::from_config(&config);
-    let use_llm = if llm_provider.model_exists() {
-        println!("✓ Using LLM for intelligent tag generation");
-        true
+    let use_llm = cli.use_llm && llm_provider.model_exists();
+    if cli.use_llm {
+        if llm_provider.model_exists() {
+            println!("✓ Using LLM for intelligent tag generation (slow: ~30s per file)");
+        } else {
+            println!("⚠️  --use-llm specified but LLM model not found, using dictionary-based tagging");
+        }
     } else {
-        println!("⚠️  LLM model not found, using dictionary-based tagging");
-        false
-    };
+        if llm_provider.model_exists() {
+            println!("ℹ️  LLM model found but disabled (use --use-llm to enable, adds ~30s per file)");
+        }
+        println!("✓ Using dictionary-based tagging (fast)");
+    }
 
     // Initialize embedding provider for semantic search
     let ollama_url = config.ollama.url.as_str();
@@ -80,8 +89,9 @@ async fn main() -> Result<()> {
 
     // First, collect all files and their metadata for sync
     println!("📂 Scanning directory for changes...");
-    let mut all_files: Vec<FileMeta> = Vec::new();
+    let mut file_paths: Vec<std::path::PathBuf> = Vec::new();
     
+    // First pass: collect all file paths (fast)
     for entry in WalkDir::new(&cli.dir) {
         let entry = entry?;
         let path = entry.path();
@@ -90,48 +100,131 @@ async fn main() -> Result<()> {
             continue;
         }
         
-        // Get metadata for all files (including protected ones for sync)
-        let metadata = std::fs::metadata(path)?;
-        let extension = utils::get_extension(path);
-        let hash = utils::compute_file_hash(path)?;
-        let created_at = metadata
-            .created()
-            .or_else(|_| metadata.modified())
-            .unwrap_or_else(|_| std::time::SystemTime::now());
-        let updated_at = metadata
-            .modified()
-            .or_else(|_| metadata.created())
-            .unwrap_or_else(|_| std::time::SystemTime::now());
-        
-        let file_meta = FileMeta::new(
-            path.to_path_buf(),
-            metadata.len(),
-            extension,
-            created_at,
-            updated_at,
-            hash,
-        );
-        
-        all_files.push(file_meta);
+        file_paths.push(path.to_path_buf());
     }
     
-    if all_files.is_empty() {
+    if file_paths.is_empty() {
         println!("No files found to index.");
         return Ok(());
     }
     
+    println!("  Found {} files, computing hashes...", file_paths.len());
+    
+    // Second pass: compute hashes in parallel (faster)
+    let mut all_files: Vec<FileMeta> = Vec::new();
+    let mut handles = Vec::new();
+    
+    for path in file_paths {
+        let handle = tokio::task::spawn_blocking({
+            let path = path.clone();
+            move || -> Result<FileMeta> {
+                let metadata = std::fs::metadata(&path)?;
+                let extension = utils::get_extension(&path);
+                let hash = utils::compute_file_hash(&path)?;
+                let created_at = metadata
+                    .created()
+                    .or_else(|_| metadata.modified())
+                    .unwrap_or_else(|_| std::time::SystemTime::now());
+                let updated_at = metadata
+                    .modified()
+                    .or_else(|_| metadata.created())
+                    .unwrap_or_else(|_| std::time::SystemTime::now());
+                
+                Ok(FileMeta::new(
+                    path,
+                    metadata.len(),
+                    extension,
+                    created_at,
+                    updated_at,
+                    hash,
+                ))
+            }
+        });
+        handles.push(handle);
+        
+        // Process in batches of 50 to avoid too many concurrent tasks
+        if handles.len() >= 50 {
+            for handle in handles.drain(..) {
+                match handle.await {
+                    Ok(Ok(file_meta)) => all_files.push(file_meta),
+                    Ok(Err(e)) => eprintln!("Warning: Failed to process file: {}", e),
+                    Err(e) => eprintln!("Warning: Task error: {}", e),
+                }
+            }
+            print!("\r  Processed {} files...", all_files.len());
+            std::io::Write::flush(&mut std::io::stdout()).ok();
+        }
+    }
+    
+    // Process remaining handles
+    for handle in handles {
+        match handle.await {
+            Ok(Ok(file_meta)) => all_files.push(file_meta),
+            Ok(Err(e)) => eprintln!("Warning: Failed to process file: {}", e),
+            Err(e) => eprintln!("Warning: Task error: {}", e),
+        }
+    }
+    
+    print!("\r  Processed {} files.                    \n", all_files.len());
+    
+    if all_files.is_empty() {
+        println!("No valid files found to index.");
+        return Ok(());
+    }
+    
+    println!("  Ready to index {} files", all_files.len());
+    
     // Sync index: remove deleted files, detect changes
-    println!("🔄 Synchronizing index...");
+    println!("🔄 Synchronizing index with Meilisearch...");
     let file_refs: Vec<&FileMeta> = all_files.iter().collect();
-    let sync_stats = indexer.sync_index(&file_refs).await?;
+    let sync_stats = match tokio::time::timeout(
+        std::time::Duration::from_secs(60),
+        indexer.sync_index(&file_refs)
+    ).await {
+        Ok(Ok(stats)) => stats,
+        Ok(Err(e)) => {
+            eprintln!("Error: Sync failed: {}", e);
+            eprintln!("Continuing with indexing anyway...");
+            // Return empty stats to continue
+            SyncStats {
+                updated: 0,
+                deleted: 0,
+                unchanged: 0,
+            }
+        }
+        Err(_) => {
+            eprintln!("Warning: Sync timed out after 60 seconds");
+            eprintln!("Continuing with indexing anyway...");
+            // Return empty stats to continue
+            SyncStats {
+                updated: 0,
+                deleted: 0,
+                unchanged: 0,
+            }
+        }
+    };
+    
+    // Calculate how many files will be newly indexed (not in sync stats)
+    let total_files_to_index = all_files.iter()
+        .filter(|f| !utils::is_inside_protected_structure_with_base(&f.path, Some(&cli.dir)))
+        .count();
+    let new_files = total_files_to_index.saturating_sub(sync_stats.unchanged + sync_stats.updated);
     
     println!("Sync results:");
-    println!("  ✓ {} files unchanged", sync_stats.unchanged);
+    if sync_stats.unchanged > 0 {
+        println!("  ✓ {} files unchanged", sync_stats.unchanged);
+    }
     if sync_stats.updated > 0 {
         println!("  ↻ {} files will be updated (content changed)", sync_stats.updated);
     }
+    if new_files > 0 {
+        println!("  ➕ {} new files will be indexed", new_files);
+    }
     if sync_stats.deleted > 0 {
         println!("  ✗ {} files removed from index (no longer exist)", sync_stats.deleted);
+    }
+    if sync_stats.unchanged == 0 && sync_stats.updated == 0 && new_files == total_files_to_index && total_files_to_index > 0 {
+        println!("  ℹ️  Index is empty, all {} files will be indexed", total_files_to_index);
     }
     
     // Count files for progress bar (excluding protected for indexing count)
@@ -209,12 +302,24 @@ async fn main() -> Result<()> {
                     llm_tag_failures += 1;
                     eprintln!("Warning: LLM tag generation failed for {}: {}, falling back to dictionary", file_name, e);
                     // Fallback to dictionary-based tags
-                    semantic_source.generate_tags(content_for_tags).await.unwrap_or_default()
+                    match semantic_source.generate_tags(content_for_tags).await {
+                        Ok(dict_tags) => dict_tags,
+                        Err(e2) => {
+                            eprintln!("Warning: Dictionary tag generation also failed for {}: {}, using empty tags", file_name, e2);
+                            Vec::new()
+                        }
+                    }
                 }
             }
         } else {
             // Use dictionary-based tagging from SemanticSource
-            semantic_source.generate_tags(content_for_tags).await.unwrap_or_default()
+            match semantic_source.generate_tags(content_for_tags).await {
+                Ok(dict_tags) => dict_tags,
+                Err(e) => {
+                    eprintln!("Warning: Dictionary tag generation failed for {}: {}, using empty tags", file_name, e);
+                    Vec::new()
+                }
+            }
         };
 
         // Generate embedding for semantic search
@@ -262,6 +367,9 @@ async fn main() -> Result<()> {
                     None
                 } else {
                     embedding_count += 1;
+                    if embedding_count == 1 {
+                        println!("  ✓ First embedding generated: {} dimensions", emb.len());
+                    }
                     Some(emb)
                 }
             }
@@ -274,14 +382,25 @@ async fn main() -> Result<()> {
 
         // Index with metadata and embedding (tags and text are NOT stored, only used for embedding)
         // ID is based on file hash + updated_at, so same content at different times = different documents
-        indexer.index_semantic_file(
+        match indexer.index_semantic_file(
             file_meta,
             &tags, // Passed but not stored - used only for embedding generation
             text.as_deref(), // Passed but not stored - used only for embedding generation
             file_metadata.as_ref(),
             embedding.as_deref(),
-        ).await?;
-        count += 1;
+        ).await {
+            Ok(()) => {
+                count += 1;
+                if count == 1 {
+                    println!("  ✓ First file indexed successfully");
+                }
+            }
+            Err(e) => {
+                eprintln!("Error: Failed to index {}: {}", file_name, e);
+                // Continue with next file instead of aborting
+                continue;
+            }
+        }
         
         if is_protected {
             protected_count += 1;
