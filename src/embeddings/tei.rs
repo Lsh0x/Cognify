@@ -29,8 +29,14 @@ struct TeiEmbeddingRequest {
 }
 
 #[derive(Deserialize)]
-struct TeiEmbeddingResponse {
-    embeddings: Vec<Vec<f32>>,
+#[serde(untagged)]
+enum TeiEmbeddingResponse {
+    // Standard format: {"embeddings": [[...]]}
+    Standard { embeddings: Vec<Vec<f32>> },
+    // Alternative format: array of arrays directly
+    DirectArrays(Vec<Vec<f32>>),
+    // Single array format (unlikely but possible)
+    SingleArray(Vec<f32>),
 }
 
 #[async_trait::async_trait]
@@ -67,17 +73,68 @@ impl EmbeddingProvider for TeiEmbeddingProvider {
             );
         }
 
-        let embedding_response: TeiEmbeddingResponse = response
-            .json()
+        // Get response text first for better error messages
+        let response_text = response
+            .text()
             .await
-            .context("Failed to parse TEI embedding response")?;
+            .context("Failed to read TEI response body")?;
 
-        // TEI returns array of arrays (one embedding per input)
-        if embedding_response.embeddings.is_empty() {
-            anyhow::bail!("TEI returned empty embeddings array");
+        // Try parsing in order: single array (most common), then wrapped formats
+        // First try as a single array directly (most common TEI response format)
+        if let Ok(single_array) = serde_json::from_str::<Vec<f32>>(&response_text) {
+            if single_array.is_empty() {
+                anyhow::bail!("TEI returned empty embedding array");
+            }
+            // Update dimension if needed
+            let actual_dimension = single_array.len();
+            let expected_dimension = self.dimension.load(Ordering::Relaxed);
+            if actual_dimension != expected_dimension {
+                eprintln!(
+                    "Info: TEI model returned embedding dimension {} (expected {}). Updating to match actual dimension.",
+                    actual_dimension, expected_dimension
+                );
+                self.dimension.store(actual_dimension, Ordering::Relaxed);
+            }
+            return Ok(single_array);
         }
 
-        let embedding = embedding_response.embeddings[0].clone();
+        // Try parsing as wrapped formats
+        let embedding_response = match serde_json::from_str::<TeiEmbeddingResponse>(&response_text) {
+            Ok(resp) => resp,
+            Err(e) => {
+                // If all parsing fails, show helpful error
+                let preview = if response_text.len() > 500 {
+                    format!("{}...", &response_text[..500])
+                } else {
+                    response_text.clone()
+                };
+                
+                anyhow::bail!(
+                    "Failed to parse TEI embedding response. Error: {}. Response preview: {}",
+                    e,
+                    preview
+                );
+            }
+        };
+
+        // Extract embedding based on response format
+        let embedding = match embedding_response {
+            TeiEmbeddingResponse::Standard { embeddings } => {
+                if embeddings.is_empty() {
+                    anyhow::bail!("TEI returned empty embeddings array");
+                }
+                embeddings[0].clone()
+            }
+            TeiEmbeddingResponse::DirectArrays(embeddings) => {
+                if embeddings.is_empty() {
+                    anyhow::bail!("TEI returned empty embeddings array");
+                }
+                embeddings[0].clone()
+            }
+            TeiEmbeddingResponse::SingleArray(embedding) => {
+                embedding
+            }
+        };
 
         // Handle empty or invalid embeddings
         if embedding.is_empty() {
