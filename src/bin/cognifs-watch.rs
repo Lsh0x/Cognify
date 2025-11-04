@@ -42,6 +42,7 @@ async fn index_file(
     indexer: &MeilisearchIndexer,
     embedding_provider: &dyn EmbeddingProvider,
     base_dir: &std::path::Path,
+    max_tokens: usize,
 ) -> Result<()> {
     // Skip if in protected structure
     if utils::is_inside_protected_structure_with_base(path, Some(base_dir)) {
@@ -119,7 +120,8 @@ async fn index_file(
         fallback
     };
 
-    let embedding = embedding_provider.compute_embedding(&embedding_content).await.ok();
+    // Use chunked embedding if content is long (for Ollama with token limits)
+    let embedding = embedding_provider.compute_chunked_embedding(&embedding_content, max_tokens).await.ok();
 
     // Index file
     indexer.index_semantic_file(
@@ -220,6 +222,13 @@ async fn main() -> Result<()> {
         (None, None)
     };
     
+    // Get max_tokens for chunking (only used for Ollama, TEI handles truncation internally)
+    let max_tokens = if config.embedding_provider == "ollama" {
+        config.ollama.max_tokens
+    } else {
+        usize::MAX // TEI handles truncation, so no chunking needed
+    };
+    
     let watcher = FileWatcher::new(&cli.dir)?;
     let mut rx = watcher.subscribe();
     
@@ -232,7 +241,7 @@ async fn main() -> Result<()> {
                     Ok(cognifs::watcher::WatchEvent::Created(meta)) => {
                         println!("Created: {}", meta.path.display());
                         if let (Some(ref idx), Some(ref emb)) = (&indexer, &embedding_provider) {
-                            match index_file(&meta.path, idx, emb.as_ref(), &cli.dir).await {
+                            match index_file(&meta.path, idx, emb.as_ref(), &cli.dir, max_tokens).await {
                                 Ok(_) => println!("  ✓ Indexed"),
                                 Err(e) => eprintln!("  ⚠️  Failed to index: {}", e),
                             }
@@ -241,7 +250,7 @@ async fn main() -> Result<()> {
                     Ok(cognifs::watcher::WatchEvent::Modified(meta)) => {
                         println!("Modified: {}", meta.path.display());
                         if let (Some(ref idx), Some(ref emb)) = (&indexer, &embedding_provider) {
-                            match index_file(&meta.path, idx, emb.as_ref(), &cli.dir).await {
+                            match index_file(&meta.path, idx, emb.as_ref(), &cli.dir, max_tokens).await {
                                 Ok(_) => println!("  ✓ Updated in index"),
                                 Err(e) => eprintln!("  ⚠️  Failed to update index: {}", e),
                             }

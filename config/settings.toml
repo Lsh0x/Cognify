@@ -36,6 +36,10 @@ model = "mxbai-embed-large"
 # Embedding dimension (must match the model's actual dimension)
 # Common values: 768 (nomic-embed-text), 1024 (mxbai-embed-large)
 dims = 1024
+# Maximum tokens per embedding request (for chunking long documents)
+# Default: 256 (mxbai-embed-large limit), 8192 for nomic-embed-text
+# Content exceeding this will be chunked and embeddings combined via mean pooling
+max_tokens = 256
 
 [llm]
 # LLM settings for intelligent tag generation

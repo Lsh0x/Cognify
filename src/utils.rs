@@ -207,6 +207,83 @@ pub fn is_inside_git_repo<P: AsRef<std::path::Path>>(path: P) -> bool {
     false
 }
 
+/// Chunk text for embedding computation, respecting token limits
+/// 
+/// Splits text into chunks that fit within the token limit, with overlap between chunks
+/// to preserve context. Uses character-based estimation (~4 chars per token).
+/// 
+/// # Arguments
+/// * `text` - The text to chunk
+/// * `max_tokens` - Maximum tokens per chunk
+/// * `overlap_tokens` - Number of tokens to overlap between chunks (for context preservation)
+/// 
+/// # Returns
+/// Vector of text chunks, each within the token limit
+pub fn chunk_text_for_embedding(text: &str, max_tokens: usize, overlap_tokens: usize) -> Vec<String> {
+    if text.trim().is_empty() {
+        return Vec::new();
+    }
+
+    // Estimate: ~4 characters per token (conservative estimate)
+    // This is a rough approximation - actual tokenization depends on the model
+    let chars_per_token = 4;
+    let max_chars_per_chunk = max_tokens * chars_per_token;
+    let overlap_chars = overlap_tokens * chars_per_token;
+
+    // If text is short enough, return as single chunk
+    if text.len() <= max_chars_per_chunk {
+        return vec![text.to_string()];
+    }
+
+    let mut chunks = Vec::new();
+    let chars: Vec<char> = text.chars().collect();
+    let mut start = 0;
+
+    while start < chars.len() {
+        let end = (start + max_chars_per_chunk).min(chars.len());
+        
+        // Try to break at word boundaries (space, newline, punctuation)
+        // to avoid splitting words in the middle
+        let mut actual_end = end;
+        if end < chars.len() {
+            // Look backwards from end for a good break point
+            let search_start = (end.saturating_sub(200)).max(start + max_chars_per_chunk / 2);
+            for i in (search_start..end).rev() {
+                let ch = chars[i];
+                if ch.is_whitespace() || ch == '.' || ch == '!' || ch == '?' || ch == '\n' {
+                    actual_end = i + 1;
+                    break;
+                }
+            }
+        }
+
+        let chunk: String = chars[start..actual_end].iter().collect();
+        chunks.push(chunk.trim().to_string());
+
+        // Move start position with overlap
+        if actual_end >= chars.len() {
+            break;
+        }
+        
+        // Start next chunk with overlap, but try to start at word boundary
+        let overlap_start = actual_end.saturating_sub(overlap_chars);
+        let mut new_start = overlap_start;
+        
+        // Try to find a word boundary after overlap_start
+        for i in overlap_start..actual_end.min(overlap_start + 100) {
+            let ch = chars[i];
+            if ch.is_whitespace() || ch == '.' || ch == '!' || ch == '?' || ch == '\n' {
+                new_start = i + 1;
+                break;
+            }
+        }
+        
+        start = new_start;
+    }
+
+    chunks
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -376,6 +453,23 @@ mod tests {
         assert!(!is_macos_metadata_file(Path::new("/path/file.txt")));
         assert!(!is_macos_metadata_file(Path::new("/path/normal_file.md")));
         assert!(!is_macos_metadata_file(Path::new("/path/.git")));
+    }
+
+    #[test]
+    fn test_chunk_text_for_embedding() {
+        let text = "This is a test. ".repeat(100); // Long text
+        let chunks = chunk_text_for_embedding(&text, 256, 50);
+        assert!(!chunks.is_empty());
+        
+        // Test empty text
+        let empty_chunks = chunk_text_for_embedding("", 256, 50);
+        assert_eq!(empty_chunks.len(), 0);
+        
+        // Test short text (should return single chunk)
+        let short = "Short text";
+        let short_chunks = chunk_text_for_embedding(short, 256, 50);
+        assert_eq!(short_chunks.len(), 1);
+        assert_eq!(short_chunks[0], short);
     }
 }
 

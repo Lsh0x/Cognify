@@ -212,6 +212,13 @@ async fn main() -> Result<()> {
     };
     
     println!("  ✓ Embedding dimension: {}", embedding_provider.dimension());
+    
+    // Get max_tokens for chunking (only used for Ollama, TEI handles truncation internally)
+    let max_tokens = if config.embedding_provider == "ollama" {
+        config.ollama.max_tokens
+    } else {
+        usize::MAX // TEI handles truncation, so no chunking needed
+    };
 
     // Walk directory and plan organization (collect phase)
     for entry in WalkDir::new(&cli.dir) {
@@ -373,7 +380,8 @@ async fn main() -> Result<()> {
             fallback
         };
 
-        let embedding = match embedding_provider.compute_embedding(&embedding_content).await {
+        // Use chunked embedding if content is long (for Ollama with token limits)
+        let embedding = match embedding_provider.compute_chunked_embedding(&embedding_content, max_tokens).await {
             Ok(emb) => {
                 // Validate embedding is not empty
                 if emb.is_empty() {

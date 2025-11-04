@@ -38,6 +38,10 @@ pub struct OllamaConfig {
     pub model: String,
     #[serde(default = "default_embedding_dims")]
     pub dims: usize,
+    /// Maximum tokens per embedding request (for chunking long documents)
+    /// Default: 256 (mxbai-embed-large limit), 8192 for nomic-embed-text
+    #[serde(default = "default_max_tokens")]
+    pub max_tokens: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,6 +74,10 @@ fn default_tei_url() -> String {
 
 fn default_tei_dims() -> usize {
     4096 // Default to Qwen3-Embedding-8B dimension
+}
+
+fn default_max_tokens() -> usize {
+    256 // Default for mxbai-embed-large, adjust based on model
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -139,6 +147,7 @@ impl Default for Config {
                 urls: None,
                 model: "nomic-embed-text".to_string(),
                 dims: 768,
+                max_tokens: 8192, // nomic-embed-text supports 8192 tokens
             },
             tei: TeiConfig {
                 url: "http://127.0.0.1:8080".to_string(),
@@ -165,6 +174,7 @@ impl Default for OllamaConfig {
             urls: None,
             model: default_ollama_model(),
             dims: default_embedding_dims(),
+            max_tokens: default_max_tokens(),
         }
     }
 }
