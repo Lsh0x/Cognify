@@ -294,6 +294,13 @@ async fn main() -> Result<()> {
 
                 // Generate embedding for semantic search
                 // Use extracted text if available, otherwise fallback to filename + tags
+                // For large files, use smart sampling (beginning + middle sample + end) instead of truncation
+                // This gives better representation than just taking the beginning
+                const MAX_EMBEDDING_TEXT_LENGTH: usize = 8192;
+                const BEGINNING_CHARS: usize = 2500;  // First 2500 chars
+                const END_CHARS: usize = 2500;        // Last 2500 chars
+                const MIDDLE_SAMPLE_CHARS: usize = 3000; // Sample from middle (around 50% mark)
+                
                 let embedding_content = if let Some(ref txt) = text {
                     if txt.trim().is_empty() || txt.len() < 10 {
                         // Build fallback content from filename and tags
@@ -309,6 +316,33 @@ async fn main() -> Result<()> {
                             fallback.push_str(". Document file.");
                         }
                         fallback
+                    } else if txt.len() > MAX_EMBEDDING_TEXT_LENGTH {
+                        // Smart sampling for large files: beginning + middle + end
+                        let chars: Vec<char> = txt.chars().collect();
+                        let total_chars = chars.len();
+                        
+                        // Take beginning
+                        let beginning: String = chars.iter()
+                            .take(BEGINNING_CHARS)
+                            .collect();
+                        
+                        // Take end
+                        let end: String = chars.iter()
+                            .rev()
+                            .take(END_CHARS)
+                            .rev()
+                            .collect();
+                        
+                        // Sample from middle (around 50% mark)
+                        let middle_start = total_chars / 2;
+                        let middle: String = chars.iter()
+                            .skip(middle_start.saturating_sub(MIDDLE_SAMPLE_CHARS / 2))
+                            .take(MIDDLE_SAMPLE_CHARS)
+                            .collect();
+                        
+                        // Combine: beginning + middle sample + end (total ~8000 chars)
+                        format!("{}\n\n[... middle content ...]\n\n{}\n\n[... end content ...]\n\n{}", 
+                            beginning, middle, end)
                     } else {
                         txt.clone()
                     }

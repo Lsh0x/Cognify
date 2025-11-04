@@ -1,17 +1,25 @@
+#[cfg(feature = "llm")]
 use crate::constants::LLM_KEYWORD_MAPPINGS;
+#[cfg(feature = "llm")]
 use crate::llm::LlmProvider;
+#[cfg(feature = "llm")]
 use anyhow::{Context, Result};
+#[cfg(feature = "llm")]
 use std::path::PathBuf;
+#[cfg(feature = "llm")]
 use std::sync::{Arc, Mutex};
+#[cfg(feature = "llm")]
 use llama_cpp::{LlamaModel, LlamaParams, SessionParams};
 
 /// Local LLM provider using native Rust llama_cpp crate
+#[cfg(feature = "llm")]
 pub struct LocalLlmProvider {
     model_path: PathBuf,
     // Use Arc<Mutex<>> to allow sharing across async boundaries
     model: Arc<Mutex<Option<Arc<LlamaModel>>>>,
 }
 
+#[cfg(feature = "llm")]
 impl LocalLlmProvider {
     /// Create a new local LLM provider
     pub fn new<P: Into<PathBuf>>(model_path: P) -> Self {
@@ -197,11 +205,13 @@ impl LocalLlmProvider {
 }
 
 /// Helper struct for cloning across async boundaries
+#[cfg(feature = "llm")]
 struct LocalLlmProviderClone {
     model_path: PathBuf,
     model: Arc<Mutex<Option<Arc<LlamaModel>>>>,
 }
 
+#[cfg(feature = "llm")]
 impl LocalLlmProviderClone {
     fn ensure_model_loaded(&self) -> Result<Arc<LlamaModel>> {
         let mut model_guard = self.model.lock().unwrap();
@@ -256,6 +266,7 @@ impl LocalLlmProviderClone {
     }
 }
 
+#[cfg(feature = "llm")]
 #[async_trait::async_trait]
 impl LlmProvider for LocalLlmProvider {
     async fn generate_tags(&self, content: &str, file_path: &std::path::Path) -> Result<Vec<String>> {
@@ -403,12 +414,13 @@ Rules:
 }
 
 /// Check if a directory name is too common to be useful as context
+#[cfg(feature = "llm")]
 fn is_common_directory(dir: &str) -> bool {
     use crate::constants::COMMON_DIRECTORY_NAMES;
     COMMON_DIRECTORY_NAMES.contains(&dir.to_lowercase().as_str())
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "llm"))]
 mod tests {
     use super::*;
     use std::fs;

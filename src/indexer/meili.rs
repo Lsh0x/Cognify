@@ -14,7 +14,8 @@ pub struct Document {
     size: u64,
     extension: Option<String>,
     tags: Vec<String>, // Tags for searchability
-    // text removed - not stored in Meilisearch (only used for embedding generation)
+    #[serde(skip_serializing_if = "Option::is_none")]
+    text: Option<String>, // File content text for full-text search
     #[serde(skip_serializing_if = "Option::is_none")]
     metadata: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -86,7 +87,7 @@ impl MeilisearchIndexer {
         // Note: Settings can also be configured via Meilisearch dashboard
         // For vector search with embeddings, Meilisearch v1.5+ supports vector fields
         // Configure attributes for searching
-        let _ = index.set_searchable_attributes(&["path", "tags"]).await;
+        let _ = index.set_searchable_attributes(&["path", "tags", "text"]).await;
         let _ = index.set_filterable_attributes(&["tags", "extension", "size"]).await;
         
         Ok(Self { client, index })
@@ -177,7 +178,7 @@ impl MeilisearchIndexer {
         &self,
         file: &FileMeta,
         tags: &[String], // Stored for searchability
-        text: Option<&str>, // Not stored, only used for embedding generation
+        text: Option<&str>, // Stored in Meilisearch for full-text search
         metadata: Option<&serde_json::Value>,
         embedding: Option<&[f32]>,
     ) -> Result<()> {
@@ -191,7 +192,7 @@ impl MeilisearchIndexer {
             size: file.size,
             extension: file.extension.clone(),
             tags: tags.to_vec(), // Store tags for searchability
-            // text is NOT stored in Meilisearch (only used for embedding generation)
+            text: text.map(|s| s.to_string()), // Store text for full-text search
             metadata: metadata.cloned(),
             embedding: embedding.map(|e| e.to_vec()),
         };
