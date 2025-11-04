@@ -56,15 +56,12 @@ async fn main() -> Result<()> {
     .context("Failed to create Meilisearch indexer")?;
 
     // Initialize LLM provider for tag generation
-    let model_path = shellexpand::tilde(&config.llm.model_path).to_string();
-    let llm_provider = LocalLlmProvider::new(model_path.clone())
-        .with_executable(config.llm.executable.clone());
-    
+    let llm_provider = LocalLlmProvider::from_config(&config);
     let use_llm = if llm_provider.model_exists() {
         println!("✓ Using LLM for intelligent tag generation");
         true
     } else {
-        println!("⚠️  LLM model not found at {}, using dictionary-based tagging", model_path);
+        println!("⚠️  LLM model not found, using dictionary-based tagging");
         false
     };
 

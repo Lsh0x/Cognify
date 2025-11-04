@@ -35,7 +35,7 @@ Cognifs is built with a **trait-based architecture** for maximum extensibility:
 
 - **Trait-based components**: LLM providers, embedding providers, indexers, and file handlers all use traits
 - **SemanticSource**: Unified interface for extracting text, metadata, and generating tags from files
-- **Local-first**: Works with local LLMs (guff) and local Ollama instance
+- **Local-first**: Works with local LLMs (llama-cpp) and local Ollama instance
 - **Extensible**: Easy to add new file type handlers, LLM providers, or search backends
 - **Safe**: Only operates on explicitly provided directory paths (never entire filesystem)
 - **Async**: Built on Tokio for high-performance async I/O
@@ -55,7 +55,7 @@ cargo build --release
 - Rust 1.70+
 - Meilisearch (for indexing and search)
 - Ollama (for embeddings, optional)
-- Local LLM (guff/llama.cpp) for intelligent tagging (optional)
+- Local LLM via llama-cpp (GGUF) for intelligent tagging (optional)
 
 ## 🚦 Usage
 
@@ -160,7 +160,7 @@ Index files after organizing:
 cognifs-organize ~/Documents/ --index
 ```
 
-The `--use-llm` flag enhances tag generation by using your local LLM (guff/llama.cpp) to understand file content semantically. If the LLM is not available, it falls back to dictionary-based tagging.
+The `--use-llm` flag enhances tag generation by using your local LLM (llama-cpp) to understand file content semantically. If the LLM is not available, it falls back to dictionary-based tagging.
 
 The `--index` flag will index all organized files to Meilisearch after the reorganization is complete, using the tags and embeddings already computed during the organization process.
 
@@ -414,7 +414,7 @@ cognifs/
 │   │       └── generic.rs # Generic fallback
 │   ├── llm/             # LLM providers
 │   │   ├── trait.rs     # LlmProvider trait
-│   │   └── local.rs     # Local guff implementation
+│   │   └── local.rs     # Local llama-cpp implementation
 │   ├── embeddings/      # Embedding providers
 │   │   ├── trait.rs     # EmbeddingProvider trait
 │   │   └── local.rs     # Ollama embeddings

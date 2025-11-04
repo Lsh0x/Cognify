@@ -85,16 +85,13 @@ async fn main() -> Result<()> {
 
     // Initialize LLM provider if requested
     let llm_provider: Option<LocalLlmProvider> = if cli.use_llm {
-        let model_path = shellexpand::tilde(&config.llm.model_path).to_string();
-        let llm = LocalLlmProvider::new(model_path.clone())
-            .with_executable(config.llm.executable.clone());
-        
+        let llm = LocalLlmProvider::from_config(&config);
         // Check if LLM is available
         if llm.model_exists() {
             println!("✓ Using LLM for intelligent tag generation");
             Some(llm)
         } else {
-            println!("⚠️  LLM model not found at {}, falling back to dictionary-based tagging", model_path);
+            println!("⚠️  LLM model not found, falling back to dictionary-based tagging");
             None
         }
     } else {
