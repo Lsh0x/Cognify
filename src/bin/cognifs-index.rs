@@ -11,6 +11,7 @@ use cognifs::{
 };
 use indicatif::{ProgressBar, ProgressStyle};
 use std::path::PathBuf;
+use std::sync::Arc;
 use walkdir::WalkDir;
 
 #[derive(Parser)]
@@ -54,13 +55,13 @@ async fn main() -> Result<()> {
     let meili_key = cli.meili_key.or_else(|| config.meilisearch_api_key());
     let index_name = cli.index_name.unwrap_or_else(|| config.meilisearch.index_name.clone());
     
-    let indexer = MeilisearchIndexer::new(
+    let indexer = Arc::new(MeilisearchIndexer::new(
         &meili_url,
         meili_key.as_deref(),
         &index_name,
     )
     .await
-    .context("Failed to create Meilisearch indexer")?;
+    .context("Failed to create Meilisearch indexer")?);
 
     // Initialize LLM provider for tag generation (disabled by default due to performance)
     let llm_provider = LocalLlmProvider::from_config(&config);
@@ -102,19 +103,27 @@ async fn main() -> Result<()> {
 
     // First, collect all files and their metadata for sync
     println!("📂 Scanning directory for changes...");
-    let mut file_paths: Vec<std::path::PathBuf> = Vec::new();
     
-    // First pass: collect all file paths (fast)
-    for entry in WalkDir::new(&cli.dir) {
-        let entry = entry?;
-        let path = entry.path();
-        
-        if !path.is_file() {
-            continue;
-        }
-        
-        file_paths.push(path.to_path_buf());
-    }
+    // Use rayon to parallelize directory traversal
+    use rayon::prelude::*;
+    
+    // Collect all entries first, then filter in parallel
+    let entries: Vec<_> = WalkDir::new(&cli.dir)
+        .into_iter()
+        .collect::<Result<Vec<_>, _>>()?;
+    
+    // Filter files in parallel using rayon
+    let file_paths: Vec<std::path::PathBuf> = entries
+        .par_iter()
+        .filter_map(|entry| {
+            let path = entry.path();
+            if path.is_file() {
+                Some(path.to_path_buf())
+            } else {
+                None
+            }
+        })
+        .collect();
     
     if file_paths.is_empty() {
         println!("No files found to index.");
@@ -204,7 +213,7 @@ async fn main() -> Result<()> {
         let file_refs: Vec<&FileMeta> = all_files.iter().collect();
         match tokio::time::timeout(
             std::time::Duration::from_secs(60),
-            indexer.sync_index(&file_refs)
+            indexer.as_ref().sync_index(&file_refs)
         ).await {
             Ok(Ok(stats)) => {
                 // Calculate how many files will be newly indexed (not in sync stats)
@@ -272,169 +281,214 @@ async fn main() -> Result<()> {
             .progress_chars("#>-")
     );
 
-    // Walk directory and index files
-    let mut count = 0;
-    let mut embedding_count = 0;
-    let mut embedding_failures = 0;
-    let mut protected_count = 0;
-    let mut llm_tag_count = 0;
-    let mut llm_tag_failures = 0;
+    // Walk directory and index files in parallel
+    // Use a semaphore to limit concurrent operations (avoid overwhelming the system)
+    let max_concurrent = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(8)
+        .min(16); // Cap at 16 to avoid too many concurrent I/O operations
+    let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
     
-    for file_meta in all_files.iter() {
-        let path = &file_meta.path;
-        let is_protected = utils::is_inside_protected_structure_with_base(path, Some(&cli.dir));
-        
-        let file_name = path.file_name()
-            .and_then(|n| n.to_str())
-            .unwrap_or("unknown");
-        
-        if is_protected {
-            // Protected files are still indexed but not counted in progress
-            // Skip progress bar for protected files
-        } else {
-            pb.set_message(format!("Indexing: {}", file_name));
-        }
-
-        let extension_str = file_meta.extension.as_ref().map(|s| s.as_str()).unwrap_or("unknown");
-
-        // Create SemanticFile via factory
-        let semantic_source = FileFactory::create_from_meta(file_meta);
-        
-        // Extract text and metadata using SemanticSource
-        let text = match semantic_source.to_text().await {
-            Ok(t) => Some(t),
-            Err(e) => {
-                eprintln!("Warning: Failed to extract text from {}: {}", file_name, e);
-                None
-            }
-        };
-        
-        let file_metadata = match semantic_source.to_metadata().await {
-            Ok(m) => m,
-            Err(e) => {
-                eprintln!("Warning: Failed to extract metadata from {}: {}", file_name, e);
-                None
-            }
-        };
-
-        // Generate tags using LLM if available, otherwise use SemanticSource
-        let content_for_tags = text.as_deref().unwrap_or("");
-        let tags = if use_llm {
-            match llm_provider.generate_tags(content_for_tags, path).await {
-                Ok(llm_tags) => {
-                    llm_tag_count += 1;
-                    llm_tags
+    let mut count = Arc::new(std::sync::Mutex::new(0));
+    let mut embedding_count = Arc::new(std::sync::Mutex::new(0));
+    let mut embedding_failures = Arc::new(std::sync::Mutex::new(0));
+    let mut protected_count = Arc::new(std::sync::Mutex::new(0));
+    let mut llm_tag_count = Arc::new(std::sync::Mutex::new(0));
+    let mut llm_tag_failures = Arc::new(std::sync::Mutex::new(0));
+    
+    // Process files concurrently using futures::stream
+    use futures::stream::{self, StreamExt};
+    
+    let file_metas: Vec<_> = all_files.iter().collect();
+    let mut stream = stream::iter(file_metas.into_iter())
+        .map(|file_meta| {
+            let semaphore = semaphore.clone();
+            let indexer = indexer.clone();
+            let embedding_provider = embedding_provider.as_ref();
+            let llm_provider = &llm_provider;
+            let cli_dir = cli.dir.clone();
+            let use_llm = use_llm;
+            let pb = pb.clone();
+            let count = count.clone();
+            let embedding_count = embedding_count.clone();
+            let embedding_failures = embedding_failures.clone();
+            let protected_count = protected_count.clone();
+            let llm_tag_count = llm_tag_count.clone();
+            let llm_tag_failures = llm_tag_failures.clone();
+            
+            async move {
+                let _permit = semaphore.acquire().await.unwrap();
+                let path = &file_meta.path;
+                let is_protected = utils::is_inside_protected_structure_with_base(path, Some(cli_dir));
+                
+                let file_name = path.file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("unknown");
+                
+                if !is_protected {
+                    pb.set_message(format!("Indexing: {}", file_name));
                 }
-                Err(e) => {
-                    llm_tag_failures += 1;
-                    eprintln!("Warning: LLM tag generation failed for {}: {}, falling back to dictionary", file_name, e);
-                    // Fallback to dictionary-based tags
+
+                let extension_str = file_meta.extension.as_ref().map(|s| s.as_str()).unwrap_or("unknown");
+
+                // Create SemanticFile via factory
+                let semantic_source = FileFactory::create_from_meta(file_meta);
+                
+                // Extract text and metadata using SemanticSource
+                let text = match semantic_source.to_text().await {
+                    Ok(t) => Some(t),
+                    Err(e) => {
+                        eprintln!("Warning: Failed to extract text from {}: {}", file_name, e);
+                        None
+                    }
+                };
+                
+                let file_metadata = match semantic_source.to_metadata().await {
+                    Ok(m) => m,
+                    Err(e) => {
+                        eprintln!("Warning: Failed to extract metadata from {}: {}", file_name, e);
+                        None
+                    }
+                };
+
+                // Generate tags using LLM if available, otherwise use SemanticSource
+                let content_for_tags = text.as_deref().unwrap_or("");
+                let tags = if use_llm {
+                    match llm_provider.generate_tags(content_for_tags, path).await {
+                        Ok(llm_tags) => {
+                            *llm_tag_count.lock().unwrap() += 1;
+                            llm_tags
+                        }
+                        Err(e) => {
+                            *llm_tag_failures.lock().unwrap() += 1;
+                            eprintln!("Warning: LLM tag generation failed for {}: {}, falling back to dictionary", file_name, e);
+                            // Fallback to dictionary-based tags
+                            match semantic_source.generate_tags(content_for_tags).await {
+                                Ok(dict_tags) => dict_tags,
+                                Err(e2) => {
+                                    eprintln!("Warning: Dictionary tag generation also failed for {}: {}, using empty tags", file_name, e2);
+                                    Vec::new()
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    // Use dictionary-based tagging from SemanticSource
                     match semantic_source.generate_tags(content_for_tags).await {
                         Ok(dict_tags) => dict_tags,
-                        Err(e2) => {
-                            eprintln!("Warning: Dictionary tag generation also failed for {}: {}, using empty tags", file_name, e2);
+                        Err(e) => {
+                            eprintln!("Warning: Dictionary tag generation failed for {}: {}, using empty tags", file_name, e);
                             Vec::new()
                         }
                     }
-                }
-            }
-        } else {
-            // Use dictionary-based tagging from SemanticSource
-            match semantic_source.generate_tags(content_for_tags).await {
-                Ok(dict_tags) => dict_tags,
-                Err(e) => {
-                    eprintln!("Warning: Dictionary tag generation failed for {}: {}, using empty tags", file_name, e);
-                    Vec::new()
-                }
-            }
-        };
+                };
 
-        // Generate embedding for semantic search
-        // Use extracted text if available, otherwise fallback to filename + tags
-        let embedding_content = if let Some(ref txt) = text {
-            if txt.trim().is_empty() || txt.len() < 10 {
-                // Build fallback content from filename and tags
-                let mut fallback = format!("File: {}", file_name);
-                if extension_str != "unknown" {
-                    fallback.push_str(&format!(" ({} file)", extension_str));
-                }
-                if !tags.is_empty() {
-                    fallback.push_str(". Tags: ");
-                    fallback.push_str(&tags.join(", "));
-                }
-                if fallback.len() < 20 {
-                    fallback.push_str(". Document file.");
-                }
-                fallback
-            } else {
-                txt.clone()
-            }
-        } else {
-            // No text extracted, use fallback
-            let mut fallback = format!("File: {}", file_name);
-            if extension_str != "unknown" {
-                fallback.push_str(&format!(" ({} file)", extension_str));
-            }
-            if !tags.is_empty() {
-                fallback.push_str(". Tags: ");
-                fallback.push_str(&tags.join(", "));
-            }
-            if fallback.len() < 20 {
-                fallback.push_str(". Document file.");
-            }
-            fallback
-        };
-
-        let embedding = match embedding_provider.compute_embedding(&embedding_content).await {
-            Ok(emb) => {
-                // Validate embedding is not empty
-                if emb.is_empty() {
-                    embedding_failures += 1;
-                    eprintln!("Warning: Empty embedding returned for {}, skipping", file_name);
-                    None
-                } else {
-                    embedding_count += 1;
-                    if embedding_count == 1 {
-                        println!("  ✓ First embedding generated: {} dimensions", emb.len());
+                // Generate embedding for semantic search
+                // Use extracted text if available, otherwise fallback to filename + tags
+                let embedding_content = if let Some(ref txt) = text {
+                    if txt.trim().is_empty() || txt.len() < 10 {
+                        // Build fallback content from filename and tags
+                        let mut fallback = format!("File: {}", file_name);
+                        if extension_str != "unknown" {
+                            fallback.push_str(&format!(" ({} file)", extension_str));
+                        }
+                        if !tags.is_empty() {
+                            fallback.push_str(". Tags: ");
+                            fallback.push_str(&tags.join(", "));
+                        }
+                        if fallback.len() < 20 {
+                            fallback.push_str(". Document file.");
+                        }
+                        fallback
+                    } else {
+                        txt.clone()
                     }
-                    Some(emb)
-                }
-            }
-            Err(e) => {
-                embedding_failures += 1;
-                eprintln!("Warning: Failed to generate embedding for {}: {}", file_name, e);
-                None // Continue without embedding
-            }
-        };
+                } else {
+                    // No text extracted, use fallback
+                    let mut fallback = format!("File: {}", file_name);
+                    if extension_str != "unknown" {
+                        fallback.push_str(&format!(" ({} file)", extension_str));
+                    }
+                    if !tags.is_empty() {
+                        fallback.push_str(". Tags: ");
+                        fallback.push_str(&tags.join(", "));
+                    }
+                    if fallback.len() < 20 {
+                        fallback.push_str(". Document file.");
+                    }
+                    fallback
+                };
 
-        // Index with metadata and embedding (tags and text are NOT stored, only used for embedding)
-        // ID is based on file hash + updated_at, so same content at different times = different documents
-        match indexer.index_semantic_file(
-            file_meta,
-            &tags, // Passed but not stored - used only for embedding generation
-            text.as_deref(), // Passed but not stored - used only for embedding generation
-            file_metadata.as_ref(),
-            embedding.as_deref(),
-        ).await {
-            Ok(()) => {
-                count += 1;
-                if count == 1 {
-                    println!("  ✓ First file indexed successfully");
+                let embedding = match embedding_provider.compute_embedding(&embedding_content).await {
+                    Ok(emb) => {
+                        // Validate embedding is not empty
+                        if emb.is_empty() {
+                            *embedding_failures.lock().unwrap() += 1;
+                            eprintln!("Warning: Empty embedding returned for {}, skipping", file_name);
+                            None
+                        } else {
+                            let mut ec = embedding_count.lock().unwrap();
+                            *ec += 1;
+                            if *ec == 1 {
+                                println!("  ✓ First embedding generated: {} dimensions", emb.len());
+                            }
+                            Some(emb)
+                        }
+                    }
+                    Err(e) => {
+                        *embedding_failures.lock().unwrap() += 1;
+                        eprintln!("Warning: Failed to generate embedding for {}: {}", file_name, e);
+                        None // Continue without embedding
+                    }
+                };
+
+                // Index with metadata and embedding (tags and text are NOT stored, only used for embedding)
+                // ID is based on file hash + updated_at, so same content at different times = different documents
+                let result = match indexer.index_semantic_file(
+                    file_meta,
+                    &tags, // Passed but not stored - used only for embedding generation
+                    text.as_deref(), // Passed but not stored - used only for embedding generation
+                    file_metadata.as_ref(),
+                    embedding.as_deref(),
+                ).await {
+                    Ok(()) => {
+                        let mut c = count.lock().unwrap();
+                        *c += 1;
+                        if *c == 1 {
+                            println!("  ✓ First file indexed successfully");
+                        }
+                        Ok(())
+                    }
+                    Err(e) => {
+                        eprintln!("Error: Failed to index {}: {}", file_name, e);
+                        Err(e)
+                    }
+                };
+                
+                if is_protected {
+                    *protected_count.lock().unwrap() += 1;
+                } else {
+                    pb.inc(1);
                 }
+                
+                result
             }
-            Err(e) => {
-                eprintln!("Error: Failed to index {}: {}", file_name, e);
-                // Continue with next file instead of aborting
-                continue;
-            }
-        }
-        
-        if is_protected {
-            protected_count += 1;
-        } else {
-            pb.inc(1);
-        }
+        })
+        .buffer_unordered(max_concurrent);
+    
+    // Process all files concurrently
+    while let Some(result) = stream.next().await {
+        // Results are already handled in the closure above
+        let _ = result;
     }
+    
+    // Extract final counts
+    let count = *count.lock().unwrap();
+    let embedding_count = *embedding_count.lock().unwrap();
+    let embedding_failures = *embedding_failures.lock().unwrap();
+    let protected_count = *protected_count.lock().unwrap();
+    let llm_tag_count = *llm_tag_count.lock().unwrap();
+    let llm_tag_failures = *llm_tag_failures.lock().unwrap();
 
     pb.finish_with_message("Indexing complete!");
     println!("\n✓ Indexed {} files total", count);
