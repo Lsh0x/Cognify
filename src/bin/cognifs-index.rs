@@ -37,6 +37,10 @@ struct Cli {
     /// Enable LLM-based tag generation (very slow: ~30s per file)
     #[arg(long)]
     use_llm: bool,
+    
+    /// Skip sync step (faster for initial indexing, assumes empty index)
+    #[arg(long)]
+    init: bool,
 }
 
 #[tokio::main]
@@ -183,58 +187,72 @@ async fn main() -> Result<()> {
     
     println!("  Ready to index {} files", all_files.len());
     
-    // Sync index: remove deleted files, detect changes
-    println!("🔄 Synchronizing index with Meilisearch...");
-    let file_refs: Vec<&FileMeta> = all_files.iter().collect();
-    let sync_stats = match tokio::time::timeout(
-        std::time::Duration::from_secs(60),
-        indexer.sync_index(&file_refs)
-    ).await {
-        Ok(Ok(stats)) => stats,
-        Ok(Err(e)) => {
-            eprintln!("Error: Sync failed: {}", e);
-            eprintln!("Continuing with indexing anyway...");
-            // Return empty stats to continue
-            SyncStats {
-                updated: 0,
-                deleted: 0,
-                unchanged: 0,
-            }
+    // Sync index: remove deleted files, detect changes (skip if --init flag is used)
+    let sync_stats = if cli.init {
+        println!("ℹ️  Skipping sync step (--init flag used, assuming empty index)");
+        let total_files_to_index = all_files.iter()
+            .filter(|f| !utils::is_inside_protected_structure_with_base(&f.path, Some(&cli.dir)))
+            .count();
+        println!("  ➕ {} new files will be indexed", total_files_to_index);
+        SyncStats {
+            updated: 0,
+            deleted: 0,
+            unchanged: 0,
         }
-        Err(_) => {
-            eprintln!("Warning: Sync timed out after 60 seconds");
-            eprintln!("Continuing with indexing anyway...");
-            // Return empty stats to continue
-            SyncStats {
-                updated: 0,
-                deleted: 0,
-                unchanged: 0,
+    } else {
+        println!("🔄 Synchronizing index with Meilisearch...");
+        let file_refs: Vec<&FileMeta> = all_files.iter().collect();
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(60),
+            indexer.sync_index(&file_refs)
+        ).await {
+            Ok(Ok(stats)) => {
+                // Calculate how many files will be newly indexed (not in sync stats)
+                let total_files_to_index = all_files.iter()
+                    .filter(|f| !utils::is_inside_protected_structure_with_base(&f.path, Some(&cli.dir)))
+                    .count();
+                let new_files = total_files_to_index.saturating_sub(stats.unchanged + stats.updated);
+                
+                println!("Sync results:");
+                if stats.unchanged > 0 {
+                    println!("  ✓ {} files unchanged", stats.unchanged);
+                }
+                if stats.updated > 0 {
+                    println!("  ↻ {} files will be updated (content changed)", stats.updated);
+                }
+                if new_files > 0 {
+                    println!("  ➕ {} new files will be indexed", new_files);
+                }
+                if stats.deleted > 0 {
+                    println!("  ✗ {} files removed from index (no longer exist)", stats.deleted);
+                }
+                if stats.unchanged == 0 && stats.updated == 0 && new_files == total_files_to_index && total_files_to_index > 0 {
+                    println!("  ℹ️  Index is empty, all {} files will be indexed", total_files_to_index);
+                }
+                stats
+            }
+            Ok(Err(e)) => {
+                eprintln!("Error: Sync failed: {}", e);
+                eprintln!("Continuing with indexing anyway...");
+                // Return empty stats to continue
+                SyncStats {
+                    updated: 0,
+                    deleted: 0,
+                    unchanged: 0,
+                }
+            }
+            Err(_) => {
+                eprintln!("Warning: Sync timed out after 60 seconds");
+                eprintln!("Continuing with indexing anyway...");
+                // Return empty stats to continue
+                SyncStats {
+                    updated: 0,
+                    deleted: 0,
+                    unchanged: 0,
+                }
             }
         }
     };
-    
-    // Calculate how many files will be newly indexed (not in sync stats)
-    let total_files_to_index = all_files.iter()
-        .filter(|f| !utils::is_inside_protected_structure_with_base(&f.path, Some(&cli.dir)))
-        .count();
-    let new_files = total_files_to_index.saturating_sub(sync_stats.unchanged + sync_stats.updated);
-    
-    println!("Sync results:");
-    if sync_stats.unchanged > 0 {
-        println!("  ✓ {} files unchanged", sync_stats.unchanged);
-    }
-    if sync_stats.updated > 0 {
-        println!("  ↻ {} files will be updated (content changed)", sync_stats.updated);
-    }
-    if new_files > 0 {
-        println!("  ➕ {} new files will be indexed", new_files);
-    }
-    if sync_stats.deleted > 0 {
-        println!("  ✗ {} files removed from index (no longer exist)", sync_stats.deleted);
-    }
-    if sync_stats.unchanged == 0 && sync_stats.updated == 0 && new_files == total_files_to_index && total_files_to_index > 0 {
-        println!("  ℹ️  Index is empty, all {} files will be indexed", total_files_to_index);
-    }
     
     // Count files for progress bar (excluding protected for indexing count)
     let total_files: usize = all_files.iter()
