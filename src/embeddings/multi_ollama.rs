@@ -119,37 +119,51 @@ impl EmbeddingProvider for MultiOllamaEmbeddingProvider {
             anyhow::bail!("No Ollama servers configured");
         }
 
-        // Try round-robin first, then fallback to all servers if that fails
-        let start_index = self.current_index.load(Ordering::Relaxed) % self.urls.len();
-        let mut last_error = None;
+        // Atomically get the next server index using round-robin
+        let index = self.current_index.fetch_add(1, Ordering::Relaxed) % self.urls.len();
+        let url = &self.urls[index];
+        
+        eprintln!("🔀 Round-robin: Using Ollama server {} ({}/{})", url, index + 1, self.urls.len());
 
-        // Try starting from the round-robin URL, then try all others
-        for offset in 0..self.urls.len() {
-            let index = (start_index + offset) % self.urls.len();
-            let url = &self.urls[index];
-
-            match self.try_compute_with_url(url, content).await {
-                Ok(embedding) => {
-                    // Success! Update round-robin index for next time
-                    self.current_index.store(index + 1, Ordering::Relaxed);
-                    return Ok(embedding);
+        // Try the round-robin server first
+        match self.try_compute_with_url(url, content).await {
+            Ok(embedding) => {
+                return Ok(embedding);
+            }
+            Err(e) => {
+                eprintln!("⚠️  Server {} failed: {}, trying other servers...", url, e);
+                // Fallback to other servers if the round-robin one fails
+                let mut last_error = Some((url.clone(), e));
+                
+                for offset in 1..self.urls.len() {
+                    let fallback_index = (index + offset) % self.urls.len();
+                    let fallback_url = &self.urls[fallback_index];
+                    
+                    eprintln!("🔄 Trying fallback server {} ({}/{})", fallback_url, fallback_index + 1, self.urls.len());
+                    
+                    match self.try_compute_with_url(fallback_url, content).await {
+                        Ok(embedding) => {
+                            eprintln!("✓ Success with fallback server {}", fallback_url);
+                            return Ok(embedding);
+                        }
+                        Err(e) => {
+                            last_error = Some((fallback_url.clone(), e));
+                            // Continue to next server
+                        }
+                    }
                 }
-                Err(e) => {
-                    last_error = Some((url.clone(), e));
-                    // Continue to next server
+                
+                // All servers failed
+                if let Some((url, error)) = last_error {
+                    anyhow::bail!(
+                        "All Ollama servers failed. Last error from {}: {}",
+                        url,
+                        error
+                    );
+                } else {
+                    anyhow::bail!("All Ollama servers failed");
                 }
             }
-        }
-
-        // All servers failed
-        if let Some((url, error)) = last_error {
-            anyhow::bail!(
-                "All Ollama servers failed. Last error from {}: {}",
-                url,
-                error
-            );
-        } else {
-            anyhow::bail!("All Ollama servers failed");
         }
     }
 
