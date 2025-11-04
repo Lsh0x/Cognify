@@ -1,5 +1,5 @@
 use crate::file::SemanticSource;
-use crate::file::types::{CsvFile, GenericFile, MdFile, PdfFile, TxtFile, ZipFile};
+use crate::file::types::{CsvFile, GenericFile, JsonFile, MdFile, PdfFile, TxtFile, ZipFile};
 use crate::models::FileMeta;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -25,6 +25,7 @@ impl FileFactory {
             Some("md") | Some("markdown") => Arc::new(MdFile::new(path, extension)),
             Some("pdf") => Arc::new(PdfFile::new(path, extension)),
             Some("csv") => Arc::new(CsvFile::new(path, extension)),
+            Some("json") => Arc::new(JsonFile::new(path, extension)),
             Some("zip") => Arc::new(ZipFile::new(path, extension)),
             _ => Arc::new(GenericFile::new(path, extension)),
         }
@@ -68,6 +69,14 @@ mod tests {
         let source = FileFactory::create(path.clone(), Some("csv".to_string()));
         assert_eq!(source.path(), path.as_path());
         assert_eq!(source.extension(), Some("csv"));
+    }
+
+    #[test]
+    fn test_factory_json_file() {
+        let path = PathBuf::from("/test/file.json");
+        let source = FileFactory::create(path.clone(), Some("json".to_string()));
+        assert_eq!(source.path(), path.as_path());
+        assert_eq!(source.extension(), Some("json"));
     }
 
     #[test]
