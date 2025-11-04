@@ -2,7 +2,7 @@
 # This file configures the default settings for Cognifs
 # These defaults match the docker-compose.yml services
 
-embedding_provider = "tei"
+embedding_provider = "ollama"
 
 
 [meilisearch]
@@ -12,12 +12,10 @@ url = "http://127.0.0.1:7700"
 # Leave empty for development (matches docker-compose default)
 api_key = "I7oI6V0I3j0TdPEgtW_-wSj-9xPhPmT-XokgZoXDwiI"
 # Default index name
-index_name = "cognifs"
+index_name = "frlaw"
 
 # Embedding provider: "tei" (Text Embeddings Inference) or "ollama"
 # TEI supports high-dimensional embeddings (e.g., 4096 dims from Qwen3-Embedding-8B)
-embedding_provider = "tei"
-
 [tei]
 # Text Embeddings Inference (TEI) connection settings
 # Default URL matches TEI server running on port 8080

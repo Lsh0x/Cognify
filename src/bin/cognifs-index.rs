@@ -4,7 +4,7 @@ use cognifs::{
     config::Config,
     embeddings::{EmbeddingProvider, LocalEmbeddingProvider, TeiEmbeddingProvider},
     file::FileFactory,
-    indexer::{MeilisearchIndexer, SyncStats},
+    indexer::MeilisearchIndexer,
     llm::{LlmProvider, LocalLlmProvider},
     models::FileMeta,
     utils,
@@ -38,10 +38,6 @@ struct Cli {
     /// Enable LLM-based tag generation (very slow: ~30s per file)
     #[arg(long)]
     use_llm: bool,
-    
-    /// Skip sync step (faster for initial indexing, assumes empty index)
-    #[arg(long)]
-    init: bool,
 }
 
 #[tokio::main]
@@ -101,207 +97,81 @@ async fn main() -> Result<()> {
     
     println!("  ✓ Embedding dimension: {}", embedding_provider.dimension());
 
-    // First, collect all files and their metadata for sync
-    println!("📂 Scanning directory for changes...");
+    // Process files as we discover them (streaming, no sync, no need to store everything)
+    println!("📂 Scanning and indexing files...");
     
-    // Use rayon to parallelize directory traversal
-    use rayon::prelude::*;
+    // Use futures for concurrent processing
+    use futures::stream::{self, StreamExt};
     
-    // Collect all entries first, then filter in parallel
-    let entries: Vec<_> = WalkDir::new(&cli.dir)
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()?;
-    
-    // Filter files in parallel using rayon
-    let file_paths: Vec<std::path::PathBuf> = entries
-        .par_iter()
-        .filter_map(|entry| {
-            let path = entry.path();
-            if path.is_file() {
-                Some(path.to_path_buf())
-            } else {
-                None
-            }
-        })
-        .collect();
-    
-    if file_paths.is_empty() {
-        println!("No files found to index.");
-        return Ok(());
-    }
-    
-    println!("  Found {} files, computing hashes...", file_paths.len());
-    
-    // Second pass: compute hashes in parallel (faster)
-    let mut all_files: Vec<FileMeta> = Vec::new();
-    let mut handles = Vec::new();
-    
-    for path in file_paths {
-        let handle = tokio::task::spawn_blocking({
-            let path = path.clone();
-            move || -> Result<FileMeta> {
-                let metadata = std::fs::metadata(&path)?;
-                let extension = utils::get_extension(&path);
-                let hash = utils::compute_file_hash(&path)?;
-                let created_at = metadata
-                    .created()
-                    .or_else(|_| metadata.modified())
-                    .unwrap_or_else(|_| std::time::SystemTime::now());
-                let updated_at = metadata
-                    .modified()
-                    .or_else(|_| metadata.created())
-                    .unwrap_or_else(|_| std::time::SystemTime::now());
-                
-                Ok(FileMeta::new(
-                    path,
-                    metadata.len(),
-                    extension,
-                    created_at,
-                    updated_at,
-                    hash,
-                ))
-            }
-        });
-        handles.push(handle);
-        
-        // Process in batches of 50 to avoid too many concurrent tasks
-        if handles.len() >= 50 {
-            for handle in handles.drain(..) {
-                match handle.await {
-                    Ok(Ok(file_meta)) => all_files.push(file_meta),
-                    Ok(Err(e)) => eprintln!("Warning: Failed to process file: {}", e),
-                    Err(e) => eprintln!("Warning: Task error: {}", e),
-                }
-            }
-            print!("\r  Processed {} files...", all_files.len());
-            std::io::Write::flush(&mut std::io::stdout()).ok();
-        }
-    }
-    
-    // Process remaining handles
-    for handle in handles {
-        match handle.await {
-            Ok(Ok(file_meta)) => all_files.push(file_meta),
-            Ok(Err(e)) => eprintln!("Warning: Failed to process file: {}", e),
-            Err(e) => eprintln!("Warning: Task error: {}", e),
-        }
-    }
-    
-    print!("\r  Processed {} files.                    \n", all_files.len());
-    
-    if all_files.is_empty() {
-        println!("No valid files found to index.");
-        return Ok(());
-    }
-    
-    println!("  Ready to index {} files", all_files.len());
-    
-    // Sync index: remove deleted files, detect changes (skip if --init flag is used)
-    let sync_stats = if cli.init {
-        println!("ℹ️  Skipping sync step (--init flag used, assuming empty index)");
-        let total_files_to_index = all_files.iter()
-            .filter(|f| !utils::is_inside_protected_structure_with_base(&f.path, Some(&cli.dir)))
-            .count();
-        println!("  ➕ {} new files will be indexed", total_files_to_index);
-        SyncStats {
-            updated: 0,
-            deleted: 0,
-            unchanged: 0,
-        }
-    } else {
-        println!("🔄 Synchronizing index with Meilisearch...");
-        let file_refs: Vec<&FileMeta> = all_files.iter().collect();
-        match tokio::time::timeout(
-            std::time::Duration::from_secs(60),
-            indexer.as_ref().sync_index(&file_refs)
-        ).await {
-            Ok(Ok(stats)) => {
-                // Calculate how many files will be newly indexed (not in sync stats)
-                let total_files_to_index = all_files.iter()
-                    .filter(|f| !utils::is_inside_protected_structure_with_base(&f.path, Some(&cli.dir)))
-                    .count();
-                let new_files = total_files_to_index.saturating_sub(stats.unchanged + stats.updated);
-                
-                println!("Sync results:");
-                if stats.unchanged > 0 {
-                    println!("  ✓ {} files unchanged", stats.unchanged);
-                }
-                if stats.updated > 0 {
-                    println!("  ↻ {} files will be updated (content changed)", stats.updated);
-                }
-                if new_files > 0 {
-                    println!("  ➕ {} new files will be indexed", new_files);
-                }
-                if stats.deleted > 0 {
-                    println!("  ✗ {} files removed from index (no longer exist)", stats.deleted);
-                }
-                if stats.unchanged == 0 && stats.updated == 0 && new_files == total_files_to_index && total_files_to_index > 0 {
-                    println!("  ℹ️  Index is empty, all {} files will be indexed", total_files_to_index);
-                }
-                stats
-            }
-            Ok(Err(e)) => {
-                eprintln!("Error: Sync failed: {}", e);
-                eprintln!("Continuing with indexing anyway...");
-                // Return empty stats to continue
-                SyncStats {
-                    updated: 0,
-                    deleted: 0,
-                    unchanged: 0,
-                }
-            }
-            Err(_) => {
-                eprintln!("Warning: Sync timed out after 60 seconds");
-                eprintln!("Continuing with indexing anyway...");
-                // Return empty stats to continue
-                SyncStats {
-                    updated: 0,
-                    deleted: 0,
-                    unchanged: 0,
-                }
-            }
-        }
-    };
-    
-    // Count files for progress bar (excluding protected for indexing count)
-    let total_files: usize = all_files.iter()
-        .filter(|f| !utils::is_inside_protected_structure_with_base(&f.path, Some(&cli.dir)))
-        .count();
-    
-    if total_files == 0 {
-        println!("No files to index (all files are in protected structures).");
-        return Ok(());
-    }
-
-    let pb = ProgressBar::new(total_files as u64);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos}/{len} files indexed ({msg})")
-            .unwrap()
-            .progress_chars("#>-")
-    );
-
-    // Walk directory and index files in parallel
-    // Use a semaphore to limit concurrent operations (avoid overwhelming the system)
+    // Determine concurrency limits
     let max_concurrent = std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(8)
-        .min(16); // Cap at 16 to avoid too many concurrent I/O operations
+        .min(16);
+    
+    println!("🚀 Starting to process files (max {} concurrent operations)...", max_concurrent);
+    
+    // Create progress bar (will update as we discover files)
+    let pb = ProgressBar::new(0); // Start with unknown count
+    pb.set_style(
+        ProgressStyle::default_bar()
+            .template("{spinner:.green} [{elapsed_precise}] [{wide_bar:.cyan/blue}] {pos} files indexed ({msg})")
+            .unwrap()
+            .progress_chars("#>-")
+    );
+    
+    // Thread-safe counters
+    let count = Arc::new(std::sync::Mutex::new(0));
+    let embedding_count = Arc::new(std::sync::Mutex::new(0));
+    let embedding_failures = Arc::new(std::sync::Mutex::new(0));
+    let protected_count = Arc::new(std::sync::Mutex::new(0));
+    let llm_tag_count = Arc::new(std::sync::Mutex::new(0));
+    let llm_tag_failures = Arc::new(std::sync::Mutex::new(0));
     let semaphore = Arc::new(tokio::sync::Semaphore::new(max_concurrent));
     
-    let mut count = Arc::new(std::sync::Mutex::new(0));
-    let mut embedding_count = Arc::new(std::sync::Mutex::new(0));
-    let mut embedding_failures = Arc::new(std::sync::Mutex::new(0));
-    let mut protected_count = Arc::new(std::sync::Mutex::new(0));
-    let mut llm_tag_count = Arc::new(std::sync::Mutex::new(0));
-    let mut llm_tag_failures = Arc::new(std::sync::Mutex::new(0));
+    // Stream file paths as we discover them using a channel
+    // This allows processing to start immediately without collecting all paths first
+    println!("  Scanning directory structure...");
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     
-    // Process files concurrently using futures::stream
-    use futures::stream::{self, StreamExt};
+    // Spawn task to walk directory and send paths through channel
+    let dir_clone = cli.dir.clone();
+    tokio::spawn(async move {
+        tokio::task::spawn_blocking(move || {
+            let mut count = 0;
+            for entry in WalkDir::new(&dir_clone) {
+                match entry {
+                    Ok(e) => {
+                        if e.path().is_file() {
+                            let path = e.path().to_path_buf();
+                            if tx.send(path).is_err() {
+                                break; // Receiver dropped, stop walking
+                            }
+                            count += 1;
+                            // Print progress every 10k files
+                            if count % 10000 == 0 {
+                                eprintln!("  Found {} files so far...", count);
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: Error accessing entry: {}", e);
+                    }
+                }
+            }
+            eprintln!("  Found {} files total", count);
+        })
+        .await
+        .ok();
+    });
     
-    let file_metas: Vec<_> = all_files.iter().collect();
-    let mut stream = stream::iter(file_metas.into_iter())
-        .map(|file_meta| {
+    // Convert channel receiver to stream using tokio_stream
+    use tokio_stream::wrappers::UnboundedReceiverStream;
+    let rx_stream = UnboundedReceiverStream::new(rx);
+    
+    // Process files concurrently as we receive them from the channel
+    let mut stream = rx_stream
+        .map(|path| {
             let semaphore = semaphore.clone();
             let indexer = indexer.clone();
             let embedding_provider = embedding_provider.as_ref();
@@ -318,8 +188,46 @@ async fn main() -> Result<()> {
             
             async move {
                 let _permit = semaphore.acquire().await.unwrap();
+                
+                // Compute file metadata (hash, etc.) in blocking task
+                let file_meta = match tokio::task::spawn_blocking({
+                    let path = path.clone();
+                    move || -> Result<FileMeta> {
+                        let metadata = std::fs::metadata(&path)?;
+                        let extension = utils::get_extension(&path);
+                        let hash = utils::compute_file_hash(&path)?;
+                        let created_at = metadata
+                            .created()
+                            .or_else(|_| metadata.modified())
+                            .unwrap_or_else(|_| std::time::SystemTime::now());
+                        let updated_at = metadata
+                            .modified()
+                            .or_else(|_| metadata.created())
+                            .unwrap_or_else(|_| std::time::SystemTime::now());
+                        
+                        Ok(FileMeta::new(
+                            path,
+                            metadata.len(),
+                            extension,
+                            created_at,
+                            updated_at,
+                            hash,
+                        ))
+                    }
+                }).await {
+                    Ok(Ok(meta)) => meta,
+                    Ok(Err(e)) => {
+                        eprintln!("Warning: Failed to process file: {}", e);
+                        return Ok(());
+                    }
+                    Err(e) => {
+                        eprintln!("Warning: Task error: {}", e);
+                        return Ok(());
+                    }
+                };
+                
                 let path = &file_meta.path;
-                let is_protected = utils::is_inside_protected_structure_with_base(path, Some(cli_dir));
+                let is_protected = utils::is_inside_protected_structure_with_base(path, Some(&cli_dir));
                 
                 let file_name = path.file_name()
                     .and_then(|n| n.to_str())
@@ -327,12 +235,13 @@ async fn main() -> Result<()> {
                 
                 if !is_protected {
                     pb.set_message(format!("Indexing: {}", file_name));
+                    pb.inc_length(1); // Update total count as we discover files
                 }
 
                 let extension_str = file_meta.extension.as_ref().map(|s| s.as_str()).unwrap_or("unknown");
 
                 // Create SemanticFile via factory
-                let semantic_source = FileFactory::create_from_meta(file_meta);
+                let semantic_source = FileFactory::create_from_meta(&file_meta);
                 
                 // Extract text and metadata using SemanticSource
                 let text = match semantic_source.to_text().await {
@@ -442,12 +351,11 @@ async fn main() -> Result<()> {
                     }
                 };
 
-                // Index with metadata and embedding (tags and text are NOT stored, only used for embedding)
-                // ID is based on file hash + updated_at, so same content at different times = different documents
+                // Index with metadata and embedding
                 let result = match indexer.index_semantic_file(
-                    file_meta,
-                    &tags, // Passed but not stored - used only for embedding generation
-                    text.as_deref(), // Passed but not stored - used only for embedding generation
+                    &file_meta,
+                    &tags,
+                    text.as_deref(),
                     file_metadata.as_ref(),
                     embedding.as_deref(),
                 ).await {
