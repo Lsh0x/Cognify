@@ -68,6 +68,10 @@ struct Cli {
     /// Meilisearch index name (overrides config)
     #[arg(long)]
     index_name: Option<String>,
+    
+    /// Skip sync step when indexing (faster for initial indexing, assumes empty index)
+    #[arg(long)]
+    init: bool,
 }
 
 #[tokio::main]
@@ -662,7 +666,11 @@ async fn main() -> Result<()> {
     // Index files after organizing if requested
     if cli.index && !cli.dry_run {
         if let Some(ref idx) = indexer {
-            println!("\n📝 Indexing organized files...");
+            if cli.init {
+                println!("\n📝 Indexing organized files (--init: skipping sync checks)...");
+            } else {
+                println!("\n📝 Indexing organized files...");
+            }
             let mut indexed = 0;
             let mut failed = 0;
             
