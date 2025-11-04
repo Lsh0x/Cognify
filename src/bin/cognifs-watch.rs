@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use cognifs::{
     config::Config,
-    embeddings::{EmbeddingProvider, LocalEmbeddingProvider},
+    embeddings::{EmbeddingProvider, LocalEmbeddingProvider, TeiEmbeddingProvider},
     file::FileFactory,
     indexer::MeilisearchIndexer,
     models::FileMeta,
@@ -40,7 +40,7 @@ struct Cli {
 async fn index_file(
     path: &std::path::Path,
     indexer: &MeilisearchIndexer,
-    embedding_provider: &LocalEmbeddingProvider,
+    embedding_provider: &dyn EmbeddingProvider,
     base_dir: &std::path::Path,
 ) -> Result<()> {
     // Skip if in protected structure
@@ -172,18 +172,27 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to create Meilisearch indexer")?;
         
-        let ollama_url = config.ollama.url.as_str();
-        let embedding_model = config.ollama.model.as_str();
-        let embedding_dims = config.ollama.dims;
-        let emb_provider = LocalEmbeddingProvider::new(
-            Some(ollama_url),
-            Some(embedding_model),
-            Some(embedding_dims),
-        );
+        let emb_provider: Box<dyn EmbeddingProvider> = if config.embedding_provider == "tei" {
+            Box::new(TeiEmbeddingProvider::new(
+                Some(&config.tei.url),
+                Some(config.tei.dims),
+            ))
+        } else {
+            let ollama_url = config.ollama.url.as_str();
+            let embedding_model = config.ollama.model.as_str();
+            let embedding_dims = config.ollama.dims;
+            Box::new(LocalEmbeddingProvider::new(
+                Some(ollama_url),
+                Some(embedding_model),
+                Some(embedding_dims),
+            ))
+        };
         
         println!("✓ Auto-indexing enabled - files will be indexed when they change");
         println!("  Using Meilisearch index: {}", index_name);
-        println!("  Using embedding model: {} ({} dimensions)", embedding_model, emb_provider.dimension());
+        println!("  Using embedding provider: {} ({} dimensions)", 
+                 if config.embedding_provider == "tei" { "TEI" } else { &config.ollama.model },
+                 emb_provider.dimension());
         
         (Some(idx), Some(emb_provider))
     } else {
@@ -204,7 +213,7 @@ async fn main() -> Result<()> {
                     Ok(cognifs::watcher::WatchEvent::Created(meta)) => {
                         println!("Created: {}", meta.path.display());
                         if let (Some(ref idx), Some(ref emb)) = (&indexer, &embedding_provider) {
-                            match index_file(&meta.path, idx, emb, &cli.dir).await {
+                            match index_file(&meta.path, idx, emb.as_ref(), &cli.dir).await {
                                 Ok(_) => println!("  ✓ Indexed"),
                                 Err(e) => eprintln!("  ⚠️  Failed to index: {}", e),
                             }
@@ -213,7 +222,7 @@ async fn main() -> Result<()> {
                     Ok(cognifs::watcher::WatchEvent::Modified(meta)) => {
                         println!("Modified: {}", meta.path.display());
                         if let (Some(ref idx), Some(ref emb)) = (&indexer, &embedding_provider) {
-                            match index_file(&meta.path, idx, emb, &cli.dir).await {
+                            match index_file(&meta.path, idx, emb.as_ref(), &cli.dir).await {
                                 Ok(_) => println!("  ✓ Updated in index"),
                                 Err(e) => eprintln!("  ⚠️  Failed to update index: {}", e),
                             }

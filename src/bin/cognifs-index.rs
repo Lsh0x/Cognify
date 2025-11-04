@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 use cognifs::{
     config::Config,
-    embeddings::{EmbeddingProvider, LocalEmbeddingProvider},
+    embeddings::{EmbeddingProvider, LocalEmbeddingProvider, TeiEmbeddingProvider},
     file::FileFactory,
     indexer::{MeilisearchIndexer, SyncStats},
     llm::{LlmProvider, LocalLlmProvider},
@@ -75,17 +75,26 @@ async fn main() -> Result<()> {
     }
 
     // Initialize embedding provider for semantic search
-    let ollama_url = config.ollama.url.as_str();
-    let embedding_model = config.ollama.model.as_str();
-    let embedding_dims = config.ollama.dims;
-    let embedding_provider = LocalEmbeddingProvider::new(
-        Some(ollama_url),
-        Some(embedding_model),
-        Some(embedding_dims),
-    );
+    let embedding_provider: Box<dyn EmbeddingProvider> = if config.embedding_provider == "tei" {
+        println!("📊 Using TEI embeddings ({} dimensions)", config.tei.dims);
+        Box::new(TeiEmbeddingProvider::new(
+            Some(&config.tei.url),
+            Some(config.tei.dims),
+        ))
+    } else {
+        let ollama_url = config.ollama.url.as_str();
+        let embedding_model = config.ollama.model.as_str();
+        let embedding_dims = config.ollama.dims;
+        println!("📊 Generating embeddings with Ollama model: {} ({} dimensions)", 
+                 embedding_model, embedding_dims);
+        Box::new(LocalEmbeddingProvider::new(
+            Some(ollama_url),
+            Some(embedding_model),
+            Some(embedding_dims),
+        ))
+    };
     
-    println!("📊 Generating embeddings with model: {} ({} dimensions)", 
-             embedding_model, embedding_provider.dimension());
+    println!("  ✓ Embedding dimension: {}", embedding_provider.dimension());
 
     // First, collect all files and their metadata for sync
     println!("📂 Scanning directory for changes...");

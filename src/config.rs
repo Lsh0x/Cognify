@@ -6,11 +6,17 @@ use std::path::{Path, PathBuf};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub meilisearch: MeilisearchConfig,
+    #[serde(default)]
     pub ollama: OllamaConfig,
+    #[serde(default)]
+    pub tei: TeiConfig,
     #[serde(default)]
     pub llm: LlmConfig,
     #[serde(default)]
     pub organizer: OrganizerConfig,
+    /// Embedding provider to use: "ollama" or "tei"
+    #[serde(default = "default_embedding_provider")]
+    pub embedding_provider: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -23,14 +29,44 @@ pub struct MeilisearchConfig {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OllamaConfig {
+    #[serde(default = "default_ollama_url")]
     pub url: String,
+    #[serde(default = "default_ollama_model")]
     pub model: String,
     #[serde(default = "default_embedding_dims")]
     pub dims: usize,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TeiConfig {
+    #[serde(default = "default_tei_url")]
+    pub url: String,
+    #[serde(default = "default_tei_dims")]
+    pub dims: usize,
+}
+
 fn default_embedding_dims() -> usize {
     768 // Default to nomic-embed-text dimension
+}
+
+fn default_embedding_provider() -> String {
+    "tei".to_string() // Default to TEI
+}
+
+fn default_ollama_url() -> String {
+    "http://127.0.0.1:11434".to_string()
+}
+
+fn default_ollama_model() -> String {
+    "nomic-embed-text".to_string()
+}
+
+fn default_tei_url() -> String {
+    "http://127.0.0.1:8080".to_string()
+}
+
+fn default_tei_dims() -> usize {
+    4096 // Default to Qwen3-Embedding-8B dimension
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -100,6 +136,11 @@ impl Default for Config {
                 model: "nomic-embed-text".to_string(),
                 dims: 768,
             },
+            tei: TeiConfig {
+                url: "http://127.0.0.1:8080".to_string(),
+                dims: 4096,
+            },
+            embedding_provider: "tei".to_string(),
             llm: LlmConfig {
                 provider: "local".to_string(),
                 model_path: "~/.local/share/models/guff/model.bin".to_string(),
@@ -109,6 +150,25 @@ impl Default for Config {
                 skip_confirmation: false,
                 dry_run_default: false,
             },
+        }
+    }
+}
+
+impl Default for OllamaConfig {
+    fn default() -> Self {
+        Self {
+            url: default_ollama_url(),
+            model: default_ollama_model(),
+            dims: default_embedding_dims(),
+        }
+    }
+}
+
+impl Default for TeiConfig {
+    fn default() -> Self {
+        Self {
+            url: default_tei_url(),
+            dims: default_tei_dims(),
         }
     }
 }

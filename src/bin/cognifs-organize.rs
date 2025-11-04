@@ -6,7 +6,7 @@ use cognifs::{
         ARCHIVE_EXTENSIONS, AUDIO_EXTENSIONS, DOCUMENT_EXTENSIONS,
         IMAGE_EXTENSIONS, SPREADSHEET_EXTENSIONS, VIDEO_EXTENSIONS,
     },
-    embeddings::{EmbeddingProvider, LocalEmbeddingProvider},
+    embeddings::{EmbeddingProvider, LocalEmbeddingProvider, TeiEmbeddingProvider},
     file::FileFactory,
     indexer::{Indexer, MeilisearchIndexer},
     llm::{LlmProvider, LocalLlmProvider},
@@ -165,17 +165,26 @@ async fn main() -> Result<()> {
     let mut file_tags_map: HashMap<usize, Vec<String>> = HashMap::new(); // (file_index, tags)
     
     // Initialize embedding provider for semantic clustering
-    let ollama_url = config.ollama.url.as_str();
-    let embedding_model = config.ollama.model.as_str();
-    let embedding_dims = config.ollama.dims;
-    let embedding_provider = LocalEmbeddingProvider::new(
-        Some(ollama_url),
-        Some(embedding_model),
-        Some(embedding_dims),
-    );
+    let embedding_provider: Box<dyn EmbeddingProvider> = if config.embedding_provider == "tei" {
+        println!("📊 Using TEI embeddings for semantic clustering ({} dimensions)", config.tei.dims);
+        Box::new(TeiEmbeddingProvider::new(
+            Some(&config.tei.url),
+            Some(config.tei.dims),
+        ))
+    } else {
+        let ollama_url = config.ollama.url.as_str();
+        let embedding_model = config.ollama.model.as_str();
+        let embedding_dims = config.ollama.dims;
+        println!("📊 Using Ollama embeddings for semantic clustering (model: {}, {} dimensions)", 
+                 embedding_model, embedding_dims);
+        Box::new(LocalEmbeddingProvider::new(
+            Some(ollama_url),
+            Some(embedding_model),
+            Some(embedding_dims),
+        ))
+    };
     
-    println!("📊 Using embeddings for semantic clustering (model: {}, {} dimensions)", 
-             embedding_model, embedding_provider.dimension());
+    println!("  ✓ Embedding dimension: {}", embedding_provider.dimension());
 
     // Walk directory and plan organization (collect phase)
     for entry in WalkDir::new(&cli.dir) {
